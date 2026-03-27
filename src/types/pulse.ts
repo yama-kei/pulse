@@ -90,3 +90,54 @@ export interface DecisionQualitySignal {
   /** Commit messages from the session */
   commitMessages: string[];
 }
+
+// ── Activity event types (issue #10) ──────────────────────────
+
+export interface MpgSessionEvent {
+  schema_version: number;
+  timestamp: string;
+  event_type: "session_start" | "session_end" | "session_idle" | "session_resume" | "message_routed";
+  session_id: string;
+  project_key: string;
+  project_dir: string;
+  /** Only on session_end */
+  duration_ms?: number;
+  /** Only on message_routed */
+  persona?: string;
+}
+
+export interface ActivitySession {
+  session_id: string;
+  project_key: string;
+  project_dir: string;
+  started_at: string;
+  ended_at: string | null;
+  duration_ms: number | null;
+  message_count: number;
+  idle_count: number;
+  resume_count: number;
+}
+
+export interface ActivitySummary {
+  source: string;
+  range_start: string;
+  range_end: string;
+  total_sessions: number;
+  total_messages: number;
+  avg_duration_ms: number | null;
+  median_duration_ms: number | null;
+  projects: Record<string, { sessions: number; messages: number }>;
+  peak_concurrent: number;
+}
+
+export interface BucketedSessions {
+  bucket_size: string;
+  buckets: Array<{ bucket: string; session_count: number }>;
+}
+
+export interface GcResult {
+  source: string;
+  removed: number;
+  retained: number;
+  dry_run: boolean;
+}
