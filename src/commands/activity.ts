@@ -19,7 +19,7 @@ export function runActivity(args: string[], baseDir?: string): string {
     case "sessions":
       return handleSessions(dir, source, range, project, flags.bucket as string | undefined, json);
     case "summary":
-      return handleSummary(dir, source, range, project, json);
+      return handleSummary(dir, source, range, project, flags.bucket as string | undefined, json);
     case "gc":
       return handleGc(dir, source, (flags.retain as string | undefined) ?? "30d", (flags["dry-run"] as boolean | undefined) ?? false);
     default:
@@ -50,12 +50,17 @@ function handleSessions(
 }
 
 function handleSummary(
-  dir: string, source: string, range: string, project: string | undefined, json: boolean
+  dir: string, source: string, range: string, project: string | undefined,
+  bucket: string | undefined, json: boolean
 ): string {
+  if (bucket && bucket !== "hour" && bucket !== "day") {
+    return `Error: --bucket must be "hour" or "day", got "${bucket}"`;
+  }
   const now = new Date();
   const after = parseRange(range, now);
   const events = readEvents(dir, source, { after, project });
-  const summary = aggregateSummary(events, source, after, now);
+  const bucketSize = (bucket as "hour" | "day" | undefined) ?? "hour";
+  const summary = aggregateSummary(events, source, after, now, bucketSize);
   if (json) return JSON.stringify(summary, null, 2);
   return formatSummary(summary);
 }
@@ -132,7 +137,7 @@ Flags:
   --source <name>     Event source (default: mpg)
   --range <duration>  Time range: 7d, 24h, 30m (default: 7d)
   --project <key>     Filter by project key
-  --bucket <size>     Bucket by: hour, day (sessions only)
+  --bucket <size>     Bucket by: hour, day (sessions, summary)
   --json              Output raw JSON
   --retain <duration> Retention period for gc (default: 30d)
   --dry-run           Show what gc would remove

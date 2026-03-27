@@ -134,4 +134,35 @@ describe("runActivity", () => {
     assert.equal(parsed.bucket_size, "hour");
     assert.equal(parsed.buckets.length, 2);
   });
+
+  it("summary with --bucket returns bucketed fields", () => {
+    const dir = makeTmpDir();
+    createEventsDir(dir, [
+      JSON.stringify({ schema_version: 1, timestamp: "2026-03-27T10:00:00Z", event_type: "session_start", session_id: "s1", project_key: "proj", project_dir: "/tmp" }),
+      JSON.stringify({ schema_version: 1, timestamp: "2026-03-27T10:05:00Z", event_type: "message_routed", session_id: "s1", project_key: "proj", project_dir: "/tmp", persona: "pm" }),
+      JSON.stringify({ schema_version: 1, timestamp: "2026-03-27T10:30:00Z", event_type: "session_end", session_id: "s1", project_key: "proj", project_dir: "/tmp", duration_ms: 1800000 }),
+      JSON.stringify({ schema_version: 1, timestamp: "2026-03-27T11:00:00Z", event_type: "session_start", session_id: "s2", project_key: "proj", project_dir: "/tmp" }),
+      JSON.stringify({ schema_version: 1, timestamp: "2026-03-27T11:05:00Z", event_type: "message_routed", session_id: "s2", project_key: "proj", project_dir: "/tmp", persona: "engineer" }),
+      JSON.stringify({ schema_version: 1, timestamp: "2026-03-27T11:30:00Z", event_type: "session_end", session_id: "s2", project_key: "proj", project_dir: "/tmp", duration_ms: 1800000 }),
+    ]);
+    const result = runActivity(["summary", "--source", "mpg", "--range", "7d", "--bucket", "hour", "--json"], dir);
+    const parsed = JSON.parse(result);
+    assert.equal(parsed.total_sessions, 2);
+    assert.ok(Array.isArray(parsed.sessions_per_bucket));
+    assert.equal(parsed.sessions_per_bucket.length, 2);
+    assert.ok(Array.isArray(parsed.message_volume));
+    assert.ok(Array.isArray(parsed.persona_breakdown));
+    assert.ok(Array.isArray(parsed.peak_concurrent_series));
+    assert.ok(Array.isArray(parsed.duration_stats));
+  });
+
+  it("summary rejects invalid --bucket values", () => {
+    const dir = makeTmpDir();
+    createEventsDir(dir, [
+      JSON.stringify({ schema_version: 1, timestamp: "2026-03-27T10:00:00Z", event_type: "session_start", session_id: "s1", project_key: "proj", project_dir: "/tmp" }),
+    ]);
+    const result = runActivity(["summary", "--source", "mpg", "--range", "7d", "--bucket", "week"], dir);
+    assert.ok(result.startsWith("Error:"));
+    assert.ok(result.includes("week"));
+  });
 });
