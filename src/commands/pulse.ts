@@ -28,6 +28,20 @@ export function runPulse(projectDir: string): PulseReport {
     decisionQuality,
     tokenUsage,
     interactionPattern,
+    promptEffectiveness: {
+      available: false,
+      events: [],
+      scores: {
+        contextProvision: 0,
+        scopeDiscipline: 0,
+        feedbackQuality: 0,
+        decomposition: 0,
+        verification: 0,
+      },
+      overallScore: 0,
+      rating: "developing",
+      observation: "",
+    },
     interactionLeverage,
   };
 }
