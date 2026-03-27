@@ -7,6 +7,7 @@ export interface PulseReport {
   decisionQuality: DecisionQualitySignal;
   tokenUsage: TokenUsageSignal;
   interactionPattern: InteractionPatternSignal;
+  promptEffectiveness: PromptEffectivenessSignal;
   interactionLeverage: "HIGH" | "MEDIUM" | "LOW";
 }
 
@@ -75,6 +76,55 @@ export interface InteractionPatternSignal {
   /** How the user provides context to the agent */
   contextProvision: "structured" | "inline" | "vague";
   /** 1-2 sentence qualitative observation */
+  observation: string;
+}
+
+/** Behavioral event extracted from a user message by LLM */
+export interface PromptEvent {
+  /** Which user message (0-indexed) this event was extracted from */
+  messageIndex: number;
+  /** Classification of the user's behavior */
+  eventType:
+    | "PROVIDED_CONTEXT"
+    | "SCOPED_REQUEST"
+    | "VAGUE_REQUEST"
+    | "CORRECTED_AGENT"
+    | "REFINED_INTENT"
+    | "DECOMPOSED_TASK"
+    | "ACCEPTED_WITHOUT_REVIEW"
+    | "GAVE_ACTIONABLE_FEEDBACK"
+    | "GAVE_VAGUE_FEEDBACK"
+    | "SCOPE_CREPT";
+  /** Brief explanation of why this classification was chosen */
+  reasoning: string;
+}
+
+/** Scores for each effectiveness dimension (0.0 to 1.0) */
+export interface EffectivenessScores {
+  /** Ratio of messages that proactively provide context */
+  contextProvision: number;
+  /** Ratio of scoped vs vague requests */
+  scopeDiscipline: number;
+  /** Ratio of actionable vs vague feedback */
+  feedbackQuality: number;
+  /** Presence of task decomposition in complex sessions */
+  decomposition: number;
+  /** Inverse of uncritical acceptance rate */
+  verification: number;
+}
+
+export interface PromptEffectivenessSignal {
+  /** Whether LLM evaluation was performed */
+  available: boolean;
+  /** Extracted behavioral events from user messages */
+  events: PromptEvent[];
+  /** Scores per dimension (0.0 = poor, 1.0 = excellent) */
+  scores: EffectivenessScores;
+  /** Weighted overall score (0.0 to 1.0) */
+  overallScore: number;
+  /** Human-readable label */
+  rating: "excellent" | "good" | "moderate" | "developing";
+  /** 1-2 sentence observation */
   observation: string;
 }
 

@@ -9,7 +9,10 @@ function main(): void {
   switch (command) {
     case "run":
     case undefined:
-      run();
+      run().catch((err) => {
+        console.error(err.message);
+        process.exit(1);
+      });
       break;
     case "activity":
       activity();
@@ -31,10 +34,14 @@ function main(): void {
   }
 }
 
-function run(): void {
+async function run(): Promise<void> {
   const projectDir = resolve(args[1] || process.cwd());
 
-  const report = runPulse(projectDir);
+  if (args.includes("--no-llm")) {
+    delete process.env.OPENAI_API_KEY;
+  }
+
+  const report = await runPulse(projectDir);
   console.log(formatReport(report));
   console.log("");
 
@@ -90,6 +97,7 @@ Usage:
 Run flags:
   --json                 Also output raw JSON
   --no-save              Don't save pulse report to .pulse/
+  --no-llm               Skip LLM-powered evaluations (prompt effectiveness)
 
 Activity flags:
   --source NAME          Event source (default: mpg-sessions)
