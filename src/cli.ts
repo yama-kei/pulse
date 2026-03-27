@@ -1,4 +1,5 @@
 import { runPulse, formatReport, savePulse } from "./commands/pulse.js";
+import { runActivity } from "./commands/activity.js";
 import { resolve } from "node:path";
 
 const args = process.argv.slice(2);
@@ -19,6 +20,9 @@ function main(): void {
     case "--version":
     case "-v":
       console.log("pulse 0.1.0");
+      break;
+    case "activity":
+      console.log(runActivity(args.slice(1)));
       break;
     default:
       console.error(`Unknown command: ${command}`);
@@ -53,12 +57,15 @@ pulse — agent interaction quality measurement
 
 Usage:
   pulse [run] [path]     Run a pulse on the project (default: cwd)
+  pulse activity <sub>   Session activity queries (sessions, summary, gc)
   pulse help             Show this help
   pulse version          Show version
 
-Flags:
+Flags (run):
   --json                 Also output raw JSON
   --no-save              Don't save pulse report to .pulse/
+
+Run "pulse activity" for activity subcommand help.
 `.trim());
 }
 
