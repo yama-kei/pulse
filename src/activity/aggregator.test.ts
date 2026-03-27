@@ -109,6 +109,43 @@ describe("aggregateSummary", () => {
   });
 });
 
+describe("aggregateSummary bucketed fields", () => {
+  const events: MpgSessionEvent[] = [
+    evt({ timestamp: "2026-03-27T10:00:00Z", event_type: "session_start", session_id: "s1" }),
+    evt({ timestamp: "2026-03-27T10:05:00Z", event_type: "message_routed", session_id: "s1", persona: "pm" }),
+    evt({ timestamp: "2026-03-27T10:10:00Z", event_type: "message_routed", session_id: "s1", persona: "pm" }),
+    evt({ timestamp: "2026-03-27T10:30:00Z", event_type: "session_end", session_id: "s1", duration_ms: 1_800_000 }),
+    evt({ timestamp: "2026-03-27T11:00:00Z", event_type: "session_start", session_id: "s2", project_key: "other" }),
+    evt({ timestamp: "2026-03-27T11:05:00Z", event_type: "message_routed", session_id: "s2", project_key: "other", persona: "engineer" }),
+    evt({ timestamp: "2026-03-27T11:30:00Z", event_type: "session_end", session_id: "s2", project_key: "other", duration_ms: 1_800_000 }),
+  ];
+  const start = new Date("2026-03-27T00:00:00Z");
+  const end = new Date("2026-03-28T00:00:00Z");
+
+  it("computes sessions_per_bucket by hour", () => {
+    const summary = aggregateSummary(events, "mpg", start, end, "hour");
+    assert.deepStrictEqual(summary.sessions_per_bucket, [
+      { bucket: "2026-03-27T10", count: 1 },
+      { bucket: "2026-03-27T11", count: 1 },
+    ]);
+  });
+
+  it("computes sessions_per_bucket by day", () => {
+    const summary = aggregateSummary(events, "mpg", start, end, "day");
+    assert.deepStrictEqual(summary.sessions_per_bucket, [
+      { bucket: "2026-03-27", count: 2 },
+    ]);
+  });
+
+  it("computes message_volume by hour", () => {
+    const summary = aggregateSummary(events, "mpg", start, end, "hour");
+    assert.deepStrictEqual(summary.message_volume, [
+      { bucket: "2026-03-27T10", count: 2 },
+      { bucket: "2026-03-27T11", count: 1 },
+    ]);
+  });
+});
+
 describe("bucketSessions", () => {
   it("buckets sessions by hour", () => {
     const events: MpgSessionEvent[] = [

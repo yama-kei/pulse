@@ -56,7 +56,8 @@ export function aggregateSummary(
   events: MpgSessionEvent[],
   source: string,
   rangeStart: Date,
-  rangeEnd: Date
+  rangeEnd: Date,
+  bucketSize: "hour" | "day" = "hour"
 ): ActivitySummary {
   const sessions = aggregateSessions(events);
   const durations = sessions
@@ -74,6 +75,71 @@ export function aggregateSummary(
     projects[s.project_key].messages += s.message_count;
   }
 
+  // sessions_per_bucket
+  const sessionBucketMap = new Map<string, number>();
+  for (const e of events) {
+    if (e.event_type === "session_start") {
+      const key = bucketKey(e.timestamp, bucketSize);
+      sessionBucketMap.set(key, (sessionBucketMap.get(key) ?? 0) + 1);
+    }
+  }
+  const sessions_per_bucket = Array.from(sessionBucketMap.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([bucket, count]) => ({ bucket, count }));
+
+  // message_volume
+  const msgBucketMap = new Map<string, number>();
+  for (const e of events) {
+    if (e.event_type === "message_routed") {
+      const key = bucketKey(e.timestamp, bucketSize);
+      msgBucketMap.set(key, (msgBucketMap.get(key) ?? 0) + 1);
+    }
+  }
+  const message_volume = Array.from(msgBucketMap.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([bucket, count]) => ({ bucket, count }));
+
+  // persona_breakdown
+  const personaMap = new Map<string, number>();
+  for (const e of events) {
+    if (e.event_type === "message_routed") {
+      const agent = e.persona ?? "unknown";
+      personaMap.set(agent, (personaMap.get(agent) ?? 0) + 1);
+    }
+  }
+  const persona_breakdown = Array.from(personaMap.entries())
+    .sort(([, a], [, b]) => b - a)
+    .map(([agent, count]) => ({ agent, count }));
+
+  // peak_concurrent_series
+  const allBuckets = new Set<string>();
+  for (const e of events) {
+    allBuckets.add(bucketKey(e.timestamp, bucketSize));
+  }
+  const peak_concurrent_series = Array.from(allBuckets)
+    .sort()
+    .map(bucket => {
+      const bucketEvents = events.filter(e => bucketKey(e.timestamp, bucketSize) === bucket);
+      return { bucket, max_concurrent: computePeakConcurrent(bucketEvents) };
+    });
+
+  // duration_stats
+  const projectDurations = new Map<string, number[]>();
+  for (const s of sessions) {
+    if (s.duration_ms !== null) {
+      if (!projectDurations.has(s.project_key)) {
+        projectDurations.set(s.project_key, []);
+      }
+      projectDurations.get(s.project_key)!.push(s.duration_ms);
+    }
+  }
+  const duration_stats = Array.from(projectDurations.entries()).map(([project_key, durations]) => ({
+    project_key,
+    avg_ms: Math.round(durations.reduce((a, b) => a + b, 0) / durations.length),
+    median_ms: median(durations)!,
+    p95_ms: percentile95(durations),
+  }));
+
   return {
     source,
     range_start: rangeStart.toISOString(),
@@ -86,6 +152,11 @@ export function aggregateSummary(
     median_duration_ms: median(durations),
     projects,
     peak_concurrent: computePeakConcurrent(events),
+    sessions_per_bucket,
+    message_volume,
+    persona_breakdown,
+    peak_concurrent_series,
+    duration_stats,
   };
 }
 
@@ -97,9 +168,7 @@ export function bucketSessions(
   const bucketMap = new Map<string, number>();
 
   for (const e of starts) {
-    const key = bucketSize === "hour"
-      ? e.timestamp.slice(0, 13)
-      : e.timestamp.slice(0, 10);
+    const key = bucketKey(e.timestamp, bucketSize);
     bucketMap.set(key, (bucketMap.get(key) ?? 0) + 1);
   }
 
@@ -108,6 +177,17 @@ export function bucketSessions(
     .map(([bucket, session_count]) => ({ bucket, session_count }));
 
   return { bucket_size: bucketSize, buckets };
+}
+
+function bucketKey(timestamp: string, size: "hour" | "day"): string {
+  return size === "hour" ? timestamp.slice(0, 13) : timestamp.slice(0, 10);
+}
+
+function percentile95(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const idx = Math.ceil(0.95 * sorted.length) - 1;
+  return sorted[idx];
 }
 
 function median(values: number[]): number | null {
