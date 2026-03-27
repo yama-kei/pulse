@@ -57,6 +57,14 @@ describe("loadReports", () => {
     assert.equal(result.length, 1);
   });
 
+  it("skips structurally invalid JSON files", () => {
+    writeFileSync(join(tmp, ".pulse", "pulse-invalid.json"), JSON.stringify({ foo: "bar" }));
+    const report = makeReport();
+    writeFileSync(join(tmp, ".pulse", "pulse-valid.json"), JSON.stringify(report));
+    const result = loadReports(tmp);
+    assert.equal(result.length, 1);
+  });
+
   it("sorts by date descending", () => {
     const r1 = makeReport({ timestamp: "2026-03-25T10:00:00.000Z" });
     const r2 = makeReport({ timestamp: "2026-03-27T10:00:00.000Z" });

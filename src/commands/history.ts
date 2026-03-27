@@ -12,7 +12,10 @@ export function loadReports(projectDir: string): PulseReport[] {
   for (const file of files) {
     try {
       const raw = readFileSync(join(pulseDir, file), "utf-8");
-      reports.push(JSON.parse(raw) as PulseReport);
+      const parsed = JSON.parse(raw);
+      if (typeof parsed.timestamp === "string" && parsed.convergence) {
+        reports.push(parsed as PulseReport);
+      }
     } catch {
       // Skip malformed files
     }
