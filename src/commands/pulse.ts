@@ -4,11 +4,12 @@ import { extractIntentAnchoring } from "../extractors/intent-anchoring.js";
 import { extractDecisionQuality } from "../extractors/decision-quality.js";
 import { extractTokenUsage } from "../extractors/token-usage.js";
 import { extractInteractionPattern } from "../extractors/interaction-pattern.js";
+import { extractPromptEffectiveness } from "../extractors/prompt-effectiveness.js";
 import { execSync } from "node:child_process";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, basename } from "node:path";
 
-export function runPulse(projectDir: string): PulseReport {
+export async function runPulse(projectDir: string): Promise<PulseReport> {
   const project = basename(projectDir);
   const filesChanged = countFilesChanged(projectDir);
   const sessionFile = findSessionFile(projectDir);
@@ -17,6 +18,7 @@ export function runPulse(projectDir: string): PulseReport {
   const intentAnchoring = extractIntentAnchoring(projectDir, decisionQuality.commitMessages);
   const tokenUsage = extractTokenUsage(sessionFile, convergence.exchanges, convergence.outcomes);
   const interactionPattern = extractInteractionPattern(sessionFile);
+  const promptEffectiveness = await extractPromptEffectiveness(sessionFile);
   const interactionLeverage = computeLeverage(convergence, decisionQuality);
 
   return {
@@ -28,20 +30,7 @@ export function runPulse(projectDir: string): PulseReport {
     decisionQuality,
     tokenUsage,
     interactionPattern,
-    promptEffectiveness: {
-      available: false,
-      events: [],
-      scores: {
-        contextProvision: 0,
-        scopeDiscipline: 0,
-        feedbackQuality: 0,
-        decomposition: 0,
-        verification: 0,
-      },
-      overallScore: 0,
-      rating: "developing",
-      observation: "",
-    },
+    promptEffectiveness,
     interactionLeverage,
   };
 }
@@ -104,6 +93,20 @@ export function formatReport(report: PulseReport): string {
   lines.push(`  Context provision:     ${ip.contextProvision}`);
   lines.push(`  ${ip.observation}`);
   lines.push("");
+
+  // Prompt Effectiveness
+  if (report.promptEffectiveness.available) {
+    const pe = report.promptEffectiveness;
+    lines.push("PROMPT EFFECTIVENESS");
+    lines.push(`  Overall:               ${pe.overallScore} (${pe.rating})`);
+    lines.push(`  Context provision:     ${pe.scores.contextProvision}`);
+    lines.push(`  Scope discipline:      ${pe.scores.scopeDiscipline}`);
+    lines.push(`  Feedback quality:      ${pe.scores.feedbackQuality}`);
+    lines.push(`  Decomposition:         ${pe.scores.decomposition}`);
+    lines.push(`  Verification:          ${pe.scores.verification}`);
+    lines.push(`  ${pe.observation}`);
+    lines.push("");
+  }
 
   // Summary
   lines.push(hr);
@@ -197,6 +200,19 @@ function generateNudges(report: PulseReport): string[] {
 
   if (tu.available && tu.tokensPerExchange > 50000) {
     nudges.push("High tokens per exchange may indicate overly broad prompts or insufficient context upfront.");
+  }
+
+  if (report.promptEffectiveness.available) {
+    const pe = report.promptEffectiveness;
+    if (pe.scores.scopeDiscipline < 0.3) {
+      nudges.push("Many requests lack clear scope. Try stating what 'done' looks like before asking the agent to start.");
+    }
+    if (pe.scores.contextProvision < 0.2 && c.exchanges > 3) {
+      nudges.push("Low context provision detected. Sharing relevant files, constraints, or error messages upfront can reduce iterations.");
+    }
+    if (pe.scores.feedbackQuality < 0.3 && pe.events.some(e => e.eventType === "CORRECTED_AGENT")) {
+      nudges.push("Corrections tend to be vague. Include specific details (file, line, expected behavior) when redirecting the agent.");
+    }
   }
 
   return nudges;
