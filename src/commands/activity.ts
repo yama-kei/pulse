@@ -1,188 +1,149 @@
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { readEvents, eventsFilePath } from "../activity/reader.js";
+import { aggregateSessions, aggregateSummary, bucketSessions } from "../activity/aggregator.js";
+import { parseRange } from "../activity/range.js";
+import { GcResult } from "../types/pulse.js";
+import { writeFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { readEvents, ReadEventsOptions } from "../activity/reader.js";
-import { aggregateSessions, aggregateSummary } from "../activity/aggregator.js";
-import { BucketSize, SessionEventType } from "../types/pulse.js";
+import { join } from "node:path";
 
-export function parseRange(range: string): Date {
-  const match = range.match(/^(\d+)([hdw])$/);
-  if (!match) {
-    console.error(`Invalid range: ${range}. Use format like 24h, 7d, 30d.`);
-    process.exit(1);
+export function runActivity(args: string[], baseDir?: string): string {
+  const sub = args[0];
+  const flags = parseFlags(args.slice(1));
+  const source = (flags.source as string | undefined) ?? "mpg";
+  const range = (flags.range as string | undefined) ?? "7d";
+  const project = flags.project as string | undefined;
+  const json = (flags.json as boolean | undefined) ?? false;
+  const dir = baseDir ?? join(homedir(), ".pulse");
+
+  switch (sub) {
+    case "sessions":
+      return handleSessions(dir, source, range, project, flags.bucket as string | undefined, json);
+    case "summary":
+      return handleSummary(dir, source, range, project, json);
+    case "gc":
+      return handleGc(dir, source, (flags.retain as string | undefined) ?? "30d", (flags["dry-run"] as boolean | undefined) ?? false);
+    default:
+      return activityHelp();
   }
-  const value = parseInt(match[1], 10);
-  const unit = match[2];
+}
+
+function handleSessions(
+  dir: string, source: string, range: string, project: string | undefined,
+  bucket: string | undefined, json: boolean
+): string {
   const now = new Date();
-  switch (unit) {
-    case "h": now.setHours(now.getHours() - value); break;
-    case "d": now.setDate(now.getDate() - value); break;
-    case "w": now.setDate(now.getDate() - value * 7); break;
+  const after = parseRange(range, now);
+  const events = readEvents(dir, source, { after, project });
+
+  if (bucket) {
+    const bucketSize = bucket === "day" ? "day" : "hour";
+    const result = bucketSessions(events, bucketSize);
+    if (json) return JSON.stringify(result, null, 2);
+    return formatBucketed(result);
   }
-  return now;
+
+  const sessions = aggregateSessions(events);
+  if (json) return JSON.stringify(sessions, null, 2);
+  return formatSessions(sessions);
 }
 
-function parseFlag(args: string[], flag: string): string | undefined {
-  const idx = args.indexOf(flag);
-  if (idx === -1 || idx + 1 >= args.length) return undefined;
-  return args[idx + 1];
+function handleSummary(
+  dir: string, source: string, range: string, project: string | undefined, json: boolean
+): string {
+  const now = new Date();
+  const after = parseRange(range, now);
+  const events = readEvents(dir, source, { after, project });
+  const summary = aggregateSummary(events, source, after, now);
+  if (json) return JSON.stringify(summary, null, 2);
+  return formatSummary(summary);
 }
 
-export function runActivitySessions(args: string[]): void {
-  const source = parseFlag(args, "--source") || "mpg-sessions";
-  const range = parseFlag(args, "--range") || "7d";
-  const project = parseFlag(args, "--project");
-  const eventType = parseFlag(args, "--type") as SessionEventType | undefined;
-  const jsonFlag = args.includes("--json");
-
-  const since = parseRange(range);
-  const options: ReadEventsOptions = { since, projectKey: project, eventType };
-  const events = readEvents(source, options);
-
-  const filters: Record<string, string | undefined> = { source, range, project, type: eventType };
-
-  if (jsonFlag) {
-    const output = aggregateSessions(source, events, filters);
-    console.log(JSON.stringify(output, null, 2));
-    return;
-  }
-
-  // Human-readable table
-  if (events.length === 0) {
-    console.log("No events found.");
-    return;
-  }
-
-  console.log(`Events from ${source} (last ${range}):\n`);
-  console.log("Timestamp                    Type              Session     Project");
-  console.log("─".repeat(80));
-  for (const e of events) {
-    const ts = e.timestamp.replace("T", " ").replace("Z", "");
-    const type = e.event_type.padEnd(18);
-    const sid = e.session_id.slice(0, 10).padEnd(12);
-    console.log(`${ts}  ${type}${sid}${e.project_key}`);
-  }
-  console.log(`\n${events.length} event(s)`);
-}
-
-export function runActivitySummary(args: string[]): void {
-  const source = parseFlag(args, "--source") || "mpg-sessions";
-  const range = parseFlag(args, "--range") || "7d";
-  const project = parseFlag(args, "--project");
-  const bucket = (parseFlag(args, "--bucket") || "day") as BucketSize;
-  const jsonFlag = args.includes("--json");
-
-  const since = parseRange(range);
-  const options: ReadEventsOptions = { since, projectKey: project };
-  const events = readEvents(source, options);
-
-  const filters: Record<string, string | undefined> = { source, range, project, bucket };
-  const summary = aggregateSummary(source, events, bucket, filters);
-
-  if (jsonFlag) {
-    console.log(JSON.stringify(summary, null, 2));
-    return;
-  }
-
-  // Human-readable summary
-  if (events.length === 0) {
-    console.log("No events found.");
-    return;
-  }
-
-  console.log(`Activity Summary — ${source} (last ${range}, bucket: ${bucket})\n`);
-
-  if (summary.sessions_per_bucket.length > 0) {
-    console.log("Sessions per bucket:");
-    for (const s of summary.sessions_per_bucket) {
-      console.log(`  ${s.bucket}  ${s.project_key}: ${s.count}`);
-    }
-    console.log("");
-  }
-
-  if (summary.duration_stats.length > 0) {
-    console.log("Duration stats:");
-    for (const d of summary.duration_stats) {
-      const avg = (d.avg_ms / 60000).toFixed(1);
-      const med = (d.median_ms / 60000).toFixed(1);
-      const p95 = (d.p95_ms / 60000).toFixed(1);
-      console.log(`  ${d.project_key}: avg=${avg}m  median=${med}m  p95=${p95}m`);
-    }
-    console.log("");
-  }
-
-  if (summary.peak_concurrent.length > 0) {
-    console.log("Peak concurrent sessions:");
-    for (const p of summary.peak_concurrent) {
-      console.log(`  ${p.bucket}: ${p.max_concurrent}`);
-    }
-  }
-}
-
-export interface GcResult {
-  removed: number;
-  kept: number;
-}
-
-export function gcEvents(filePath: string, cutoff: Date, dryRun: boolean): GcResult {
-  let content: string;
-  try {
-    content = readFileSync(filePath, "utf-8");
-  } catch {
-    return { removed: 0, kept: 0 };
-  }
-
-  const lines = content.split("\n");
-  const kept: string[] = [];
-  let removed = 0;
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-
-    try {
-      const parsed = JSON.parse(trimmed);
-      const ts = new Date(parsed.timestamp);
-      if (ts < cutoff) {
-        removed++;
-        continue;
-      }
-    } catch {
-      // Keep malformed lines (don't silently delete data)
-      kept.push(trimmed);
-      continue;
-    }
-    kept.push(trimmed);
-  }
+function handleGc(dir: string, source: string, retain: string, dryRun: boolean): string {
+  const now = new Date();
+  const cutoff = parseRange(retain, now);
+  const allEvents = readEvents(dir, source);
+  const kept = allEvents.filter(e => new Date(e.timestamp) >= cutoff);
+  const removed = allEvents.length - kept.length;
 
   if (!dryRun) {
-    writeFileSync(filePath, kept.length > 0 ? kept.join("\n") + "\n" : "");
+    const filePath = eventsFilePath(dir, source);
+    if (existsSync(filePath)) {
+      const lines = kept.map(e => JSON.stringify(e));
+      writeFileSync(filePath, lines.length > 0 ? lines.join("\n") + "\n" : "");
+    }
   }
 
-  return { removed, kept: kept.length };
+  const result: GcResult = { source, removed, retained: kept.length, dry_run: dryRun };
+  return JSON.stringify(result, null, 2);
 }
 
-export function runActivityGc(args: string[]): void {
-  const source = parseFlag(args, "--source") || "mpg-sessions";
-  const retention = parseFlag(args, "--retention") || "30d";
-  const dryRun = args.includes("--dry-run");
-
-  const dir = join(homedir(), ".pulse", "events");
-  const filePath = join(dir, `${source}.jsonl`);
-
-  const cutoff = parseRange(retention);
-  const result = gcEvents(filePath, cutoff, dryRun);
-
-  if (result.removed === 0 && result.kept === 0) {
-    console.log("No events file found. Nothing to do.");
-    return;
+function formatSessions(sessions: Array<{ session_id: string; project_key: string; started_at: string; duration_ms: number | null; message_count: number }>): string {
+  if (sessions.length === 0) return "No sessions found.";
+  const lines = ["SESSION ID       PROJECT          STARTED                    DURATION    MESSAGES"];
+  for (const s of sessions) {
+    const dur = s.duration_ms ? `${Math.round(s.duration_ms / 60_000)}m` : "active";
+    lines.push(`${s.session_id.padEnd(16)} ${s.project_key.padEnd(16)} ${s.started_at.padEnd(26)} ${dur.padEnd(11)} ${s.message_count}`);
   }
+  return lines.join("\n");
+}
 
-  if (dryRun) {
-    console.log(`Would remove ${result.removed} event(s) older than ${retention}.`);
-    console.log(`Would keep ${result.kept} event(s).`);
-    return;
+function formatBucketed(result: { bucket_size: string; buckets: Array<{ bucket: string; session_count: number }> }): string {
+  if (result.buckets.length === 0) return "No sessions found.";
+  const lines = [`Sessions by ${result.bucket_size}:`, ""];
+  for (const b of result.buckets) {
+    const bar = "█".repeat(b.session_count);
+    lines.push(`  ${b.bucket}  ${bar} ${b.session_count}`);
   }
+  return lines.join("\n");
+}
 
-  console.log(`Removed ${result.removed} event(s) older than ${retention}. ${result.kept} remaining.`);
+function formatSummary(summary: { total_sessions: number; total_messages: number; avg_duration_ms: number | null; median_duration_ms: number | null; peak_concurrent: number; projects: Record<string, { sessions: number; messages: number }> }): string {
+  const lines = [
+    "ACTIVITY SUMMARY",
+    "═".repeat(40),
+    `  Sessions:           ${summary.total_sessions}`,
+    `  Messages:           ${summary.total_messages}`,
+    `  Avg duration:       ${summary.avg_duration_ms ? `${Math.round(summary.avg_duration_ms / 60_000)}m` : "n/a"}`,
+    `  Median duration:    ${summary.median_duration_ms ? `${Math.round(summary.median_duration_ms / 60_000)}m` : "n/a"}`,
+    `  Peak concurrent:    ${summary.peak_concurrent}`,
+    "",
+    "  Projects:",
+  ];
+  for (const [key, val] of Object.entries(summary.projects)) {
+    lines.push(`    ${key}: ${val.sessions} sessions, ${val.messages} messages`);
+  }
+  return lines.join("\n");
+}
+
+function activityHelp(): string {
+  return `
+pulse activity — session activity tracking
+
+Usage:
+  pulse activity sessions [flags]   List sessions
+  pulse activity summary  [flags]   Aggregated summary
+  pulse activity gc       [flags]   Remove old events
+
+Flags:
+  --source <name>     Event source (default: mpg)
+  --range <duration>  Time range: 7d, 24h, 30m (default: 7d)
+  --project <key>     Filter by project key
+  --bucket <size>     Bucket by: hour, day (sessions only)
+  --json              Output raw JSON
+  --retain <duration> Retention period for gc (default: 30d)
+  --dry-run           Show what gc would remove
+`.trim();
+}
+
+function parseFlags(args: string[]): Record<string, string | boolean> {
+  const flags: Record<string, string | boolean> = {};
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--json" || arg === "--dry-run") {
+      flags[arg.slice(2)] = true;
+    } else if (arg.startsWith("--") && i + 1 < args.length) {
+      flags[arg.slice(2)] = args[++i];
+    }
+  }
+  return flags;
 }
