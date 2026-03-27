@@ -61,7 +61,13 @@ export async function chatCompletion(
     }
 
     const data = (await response.json()) as OpenAIResponse;
-    return data.choices[0].message.content;
+    const choice = data.choices?.[0];
+    if (!choice?.message?.content) {
+      throw new LlmUnavailableError(
+        "OpenAI API returned empty or malformed response"
+      );
+    }
+    return choice.message.content;
   } finally {
     clearTimeout(timer);
   }
