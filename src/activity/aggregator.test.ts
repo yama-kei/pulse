@@ -144,6 +144,70 @@ describe("aggregateSummary bucketed fields", () => {
       { bucket: "2026-03-27T11", count: 1 },
     ]);
   });
+
+  it("computes persona_breakdown sorted by count descending", () => {
+    const summary = aggregateSummary(events, "mpg", start, end);
+    assert.deepStrictEqual(summary.persona_breakdown, [
+      { agent: "pm", count: 2 },
+      { agent: "engineer", count: 1 },
+    ]);
+  });
+
+  it("persona_breakdown uses 'unknown' when persona is missing", () => {
+    const noPersonaEvents: MpgSessionEvent[] = [
+      evt({ timestamp: "2026-03-27T10:00:00Z", event_type: "session_start", session_id: "s1" }),
+      evt({ timestamp: "2026-03-27T10:05:00Z", event_type: "message_routed", session_id: "s1" }),
+      evt({ timestamp: "2026-03-27T10:30:00Z", event_type: "session_end", session_id: "s1", duration_ms: 600_000 }),
+    ];
+    const summary = aggregateSummary(noPersonaEvents, "mpg", start, end);
+    assert.deepStrictEqual(summary.persona_breakdown, [
+      { agent: "unknown", count: 1 },
+    ]);
+  });
+
+  it("computes peak_concurrent_series per bucket", () => {
+    const overlapping: MpgSessionEvent[] = [
+      evt({ timestamp: "2026-03-27T10:00:00Z", event_type: "session_start", session_id: "s1" }),
+      evt({ timestamp: "2026-03-27T10:05:00Z", event_type: "session_start", session_id: "s2" }),
+      evt({ timestamp: "2026-03-27T10:20:00Z", event_type: "session_end", session_id: "s1", duration_ms: 1_200_000 }),
+      evt({ timestamp: "2026-03-27T10:30:00Z", event_type: "session_end", session_id: "s2", duration_ms: 1_500_000 }),
+      evt({ timestamp: "2026-03-27T11:00:00Z", event_type: "session_start", session_id: "s3" }),
+      evt({ timestamp: "2026-03-27T11:30:00Z", event_type: "session_end", session_id: "s3", duration_ms: 1_800_000 }),
+    ];
+    const summary = aggregateSummary(overlapping, "mpg", start, end, "hour");
+    assert.deepStrictEqual(summary.peak_concurrent_series, [
+      { bucket: "2026-03-27T10", max_concurrent: 2 },
+      { bucket: "2026-03-27T11", max_concurrent: 1 },
+    ]);
+  });
+
+  it("computes duration_stats per project", () => {
+    const summary = aggregateSummary(events, "mpg", start, end);
+    assert.equal(summary.duration_stats.length, 2);
+    const proj = summary.duration_stats.find(d => d.project_key === "proj")!;
+    assert.equal(proj.avg_ms, 1_800_000);
+    assert.equal(proj.median_ms, 1_800_000);
+    assert.equal(proj.p95_ms, 1_800_000);
+    const other = summary.duration_stats.find(d => d.project_key === "other")!;
+    assert.equal(other.avg_ms, 1_800_000);
+  });
+
+  it("returns empty arrays for no events", () => {
+    const summary = aggregateSummary([], "mpg", start, end);
+    assert.deepStrictEqual(summary.sessions_per_bucket, []);
+    assert.deepStrictEqual(summary.message_volume, []);
+    assert.deepStrictEqual(summary.persona_breakdown, []);
+    assert.deepStrictEqual(summary.peak_concurrent_series, []);
+    assert.deepStrictEqual(summary.duration_stats, []);
+  });
+
+  it("defaults bucketSize to hour", () => {
+    const summary = aggregateSummary(events, "mpg", start, end);
+    assert.deepStrictEqual(summary.sessions_per_bucket, [
+      { bucket: "2026-03-27T10", count: 1 },
+      { bucket: "2026-03-27T11", count: 1 },
+    ]);
+  });
 });
 
 describe("bucketSessions", () => {
