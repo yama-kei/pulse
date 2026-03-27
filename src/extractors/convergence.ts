@@ -7,6 +7,12 @@ interface SessionMessage {
   message?: { role?: string; content?: unknown };
 }
 
+/** Time window extracted from the session JSONL */
+export interface SessionTimeWindow {
+  start: string | null;
+  end: string | null;
+}
+
 /**
  * Extract convergence signal from a Claude Code session JSONL file.
  *
@@ -34,6 +40,37 @@ export function extractConvergence(
   const reworkPercent = exchanges > 0 ? round((reworkInstances / exchanges) * 100, 1) : 0;
 
   return { exchanges, outcomes, rate, reworkInstances, reworkPercent };
+}
+
+/**
+ * Extract the time window (first and last timestamp) from a session JSONL file.
+ * Used to scope git queries to the same period as the session.
+ */
+export function extractSessionTimeWindow(sessionPath: string | null): SessionTimeWindow {
+  if (!sessionPath) return { start: null, end: null };
+
+  try {
+    const content = readFileSync(sessionPath, "utf-8");
+    const lines = content.split("\n").filter(Boolean);
+    let start: string | null = null;
+    let end: string | null = null;
+
+    for (const line of lines) {
+      try {
+        const msg = JSON.parse(line);
+        if (msg.timestamp) {
+          if (!start) start = msg.timestamp;
+          end = msg.timestamp;
+        }
+      } catch {
+        // skip malformed lines
+      }
+    }
+
+    return { start, end };
+  } catch {
+    return { start: null, end: null };
+  }
 }
 
 /**

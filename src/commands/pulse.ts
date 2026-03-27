@@ -1,5 +1,5 @@
 import { PulseReport } from "../types/pulse.js";
-import { extractConvergence, findSessionFile } from "../extractors/convergence.js";
+import { extractConvergence, findSessionFile, extractSessionTimeWindow, SessionTimeWindow } from "../extractors/convergence.js";
 import { extractIntentAnchoring } from "../extractors/intent-anchoring.js";
 import { extractDecisionQuality } from "../extractors/decision-quality.js";
 import { extractTokenUsage } from "../extractors/token-usage.js";
@@ -11,8 +11,9 @@ import { join, basename } from "node:path";
 
 export async function runPulse(projectDir: string): Promise<PulseReport> {
   const project = basename(projectDir);
-  const filesChanged = countFilesChanged(projectDir);
   const sessionFile = findSessionFile(projectDir);
+  const timeWindow = extractSessionTimeWindow(sessionFile);
+  const filesChanged = countFilesChanged(projectDir, timeWindow);
   const convergence = extractConvergence(sessionFile, filesChanged);
   const decisionQuality = extractDecisionQuality(projectDir);
   const intentAnchoring = extractIntentAnchoring(projectDir, decisionQuality.commitMessages);
@@ -137,9 +138,19 @@ export function savePulse(projectDir: string, report: PulseReport): string {
   return filePath;
 }
 
-function countFilesChanged(projectDir: string): number {
+function countFilesChanged(projectDir: string, timeWindow: SessionTimeWindow): number {
   try {
-    const result = execSync("git diff --stat HEAD~5 HEAD --name-only 2>/dev/null | wc -l", {
+    let cmd: string;
+    if (timeWindow.start && timeWindow.end) {
+      // Scope to the session's time window — count unique files changed in commits during that period
+      // Use --since (inclusive) and pad end time by 1 minute to avoid cutting off final commits
+      const endPadded = new Date(new Date(timeWindow.end).getTime() + 60000).toISOString();
+      cmd = `git log --since="${timeWindow.start}" --until="${endPadded}" --name-only --pretty=format: 2>/dev/null | sort -u | grep -c .`;
+    } else {
+      // Fallback: last 5 commits
+      cmd = "git diff HEAD~5 HEAD --name-only 2>/dev/null | wc -l";
+    }
+    const result = execSync(cmd, {
       cwd: projectDir,
       timeout: 5000,
       encoding: "utf-8",

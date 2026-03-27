@@ -192,6 +192,7 @@ export async function extractPromptEffectiveness(
     events = await extractTrace(messages);
   } catch (err) {
     if (err instanceof LlmUnavailableError) {
+      process.stderr.write(`Warning: ${err.message}\n`);
       return unavailable;
     }
     throw err;
@@ -236,9 +237,17 @@ async function extractTrace(messages: string[]): Promise<PromptEvent[]> {
   try {
     parsed = JSON.parse(response);
   } catch {
+    process.stderr.write(
+      `Warning: GPT-4o response was not valid JSON (${response.length} chars). Skipping prompt effectiveness.\n`
+    );
     return [];
   }
-  if (!Array.isArray(parsed.events)) return [];
+  if (!Array.isArray(parsed.events)) {
+    process.stderr.write(
+      `Warning: GPT-4o response missing "events" array. Skipping prompt effectiveness.\n`
+    );
+    return [];
+  }
 
   // Validate and filter events
   const validTypes = new Set([
@@ -254,7 +263,7 @@ async function extractTrace(messages: string[]): Promise<PromptEvent[]> {
     "SCOPE_CREPT",
   ]);
 
-  return parsed.events.filter(
+  const validated = parsed.events.filter(
     (e: any) =>
       typeof e.messageIndex === "number" &&
       typeof e.eventType === "string" &&
@@ -262,6 +271,15 @@ async function extractTrace(messages: string[]): Promise<PromptEvent[]> {
       e.messageIndex >= 0 &&
       e.messageIndex < messages.length
   );
+
+  const dropped = parsed.events.length - validated.length;
+  if (dropped > 0) {
+    process.stderr.write(
+      `Warning: ${dropped}/${parsed.events.length} GPT-4o events failed validation and were dropped.\n`
+    );
+  }
+
+  return validated;
 }
 
 function readUserMessages(sessionPath: string): string[] {
