@@ -67,12 +67,12 @@ describe("runActivity", () => {
     assert.equal(parsed.retained, 1);
   });
 
-  it("defaults source to mpg and range to 7d", () => {
+  it("defaults range to 7d when source is explicit", () => {
     const dir = makeTmpDir();
     createEventsDir(dir, [
       JSON.stringify({ schema_version: 1, timestamp: "2026-03-27T10:00:00Z", event_type: "session_start", session_id: "s1", project_key: "proj", project_dir: "/tmp" }),
     ]);
-    const result = runActivity(["sessions", "--json"], dir);
+    const result = runActivity(["sessions", "--source", "mpg", "--json"], dir);
     const parsed = JSON.parse(result);
     assert.equal(parsed.length, 1);
   });
