@@ -2,6 +2,7 @@ import { PulseReport } from "../types/pulse.js";
 import { extractConvergence, findSessionFile } from "../extractors/convergence.js";
 import { extractIntentAnchoring } from "../extractors/intent-anchoring.js";
 import { extractDecisionQuality } from "../extractors/decision-quality.js";
+import { extractTokenUsage } from "../extractors/token-usage.js";
 import { execSync } from "node:child_process";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, basename } from "node:path";
@@ -13,6 +14,7 @@ export function runPulse(projectDir: string): PulseReport {
   const convergence = extractConvergence(sessionFile, filesChanged);
   const decisionQuality = extractDecisionQuality(projectDir);
   const intentAnchoring = extractIntentAnchoring(projectDir, decisionQuality.commitMessages);
+  const tokenUsage = extractTokenUsage(sessionFile, convergence.exchanges, convergence.outcomes);
   const interactionLeverage = computeLeverage(convergence, decisionQuality);
 
   return {
@@ -22,12 +24,13 @@ export function runPulse(projectDir: string): PulseReport {
     convergence,
     intentAnchoring,
     decisionQuality,
+    tokenUsage,
     interactionLeverage,
   };
 }
 
 export function formatReport(report: PulseReport): string {
-  const { convergence: c, intentAnchoring: ia, decisionQuality: dq } = report;
+  const { convergence: c, intentAnchoring: ia, decisionQuality: dq, tokenUsage: tu } = report;
 
   const lines: string[] = [];
   const hr = "─".repeat(50);
@@ -69,6 +72,14 @@ export function formatReport(report: PulseReport): string {
   lines.push(`  Reference "why":       ${dq.commitsWithWhy}/${dq.commitsTotal}`);
   lines.push(`  Link to issues:        ${dq.commitsWithIssueRef}/${dq.commitsTotal}`);
   lines.push("");
+
+  // Token Correlation (only if data available)
+  if (tu.available) {
+    lines.push("TOKEN CORRELATION");
+    lines.push(`  Tokens per exchange:   ${tu.tokensPerExchange.toLocaleString()}`);
+    lines.push(`  Tokens per outcome:    ${tu.tokensPerOutcome.toLocaleString()}`);
+    lines.push("");
+  }
 
   // Summary
   lines.push(hr);
@@ -134,7 +145,7 @@ function rateLabel(rate: number): string {
 
 function generateNudges(report: PulseReport): string[] {
   const nudges: string[] = [];
-  const { convergence: c, intentAnchoring: ia, decisionQuality: dq } = report;
+  const { convergence: c, intentAnchoring: ia, decisionQuality: dq, tokenUsage: tu } = report;
 
   if (!ia.intentsPresent && !ia.claudeMdPresent) {
     nudges.push("No INTENTS.md or CLAUDE.md found. Consider adding project constraints to anchor AI work.");
@@ -158,6 +169,10 @@ function generateNudges(report: PulseReport): string[] {
 
   if (c.rate > 6) {
     nudges.push(`${c.rate} exchanges per outcome is high. Pre-loading decisions (in issues, specs, or CLAUDE.md) can improve convergence.`);
+  }
+
+  if (tu.available && tu.tokensPerExchange > 50000) {
+    nudges.push("High tokens per exchange may indicate overly broad prompts or insufficient context upfront.");
   }
 
   return nudges;
