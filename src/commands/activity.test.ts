@@ -1,7 +1,7 @@
 import { describe, it, afterEach } from "node:test";
 import * as assert from "node:assert/strict";
 import { runActivity } from "./activity.js";
-import { writeFileSync, mkdtempSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdtempSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
@@ -94,6 +94,33 @@ describe("runActivity", () => {
     const parsed = JSON.parse(result);
     assert.equal(parsed.length, 1);
     assert.equal(parsed[0].project_key, "alpha");
+  });
+
+  it("gc without --dry-run rewrites the file", () => {
+    const dir = makeTmpDir();
+    createEventsDir(dir, [
+      JSON.stringify({ schema_version: 1, timestamp: "2020-01-01T00:00:00Z", event_type: "session_start", session_id: "old", project_key: "proj", project_dir: "/tmp" }),
+      JSON.stringify({ schema_version: 1, timestamp: "2026-03-27T10:00:00Z", event_type: "session_start", session_id: "new", project_key: "proj", project_dir: "/tmp" }),
+    ]);
+    const result = runActivity(["gc", "--source", "mpg", "--retain", "30d"], dir);
+    const parsed = JSON.parse(result);
+    assert.equal(parsed.dry_run, false);
+    assert.equal(parsed.removed, 1);
+    assert.equal(parsed.retained, 1);
+    const content = readFileSync(join(dir, "events", "mpg-sessions.jsonl"), "utf-8");
+    const remaining = content.trim().split("\n").map(l => JSON.parse(l));
+    assert.equal(remaining.length, 1);
+    assert.equal(remaining[0].session_id, "new");
+  });
+
+  it("rejects invalid --bucket values", () => {
+    const dir = makeTmpDir();
+    createEventsDir(dir, [
+      JSON.stringify({ schema_version: 1, timestamp: "2026-03-27T10:00:00Z", event_type: "session_start", session_id: "s1", project_key: "proj", project_dir: "/tmp" }),
+    ]);
+    const result = runActivity(["sessions", "--source", "mpg", "--range", "7d", "--bucket", "week"], dir);
+    assert.ok(result.startsWith("Error:"));
+    assert.ok(result.includes("week"));
   });
 
   it("sessions with --bucket returns bucketed data", () => {
