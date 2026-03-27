@@ -1,7 +1,8 @@
 import { readEvents, eventsFilePath } from "../activity/reader.js";
+import { scanSessions } from "../activity/session-scanner.js";
 import { aggregateSessions, aggregateSummary, bucketSessions } from "../activity/aggregator.js";
 import { parseRange } from "../activity/range.js";
-import { GcResult } from "../types/pulse.js";
+import { GcResult, MpgSessionEvent } from "../types/pulse.js";
 import { writeFileSync, existsSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +10,7 @@ import { join } from "node:path";
 export function runActivity(args: string[], baseDir?: string): string {
   const sub = args[0];
   const flags = parseFlags(args.slice(1));
-  const source = (flags.source as string | undefined) ?? "mpg";
+  const source = (flags.source as string | undefined) ?? "claude";
   const range = (flags.range as string | undefined) ?? "7d";
   const project = flags.project as string | undefined;
   const json = (flags.json as boolean | undefined) ?? false;
@@ -27,13 +28,23 @@ export function runActivity(args: string[], baseDir?: string): string {
   }
 }
 
+function loadEvents(
+  dir: string, source: string, after: Date, project: string | undefined
+): MpgSessionEvent[] {
+  if (source === "claude") {
+    const claudeDir = join(homedir(), ".claude", "projects");
+    return scanSessions(claudeDir, { after, project });
+  }
+  return readEvents(dir, source, { after, project });
+}
+
 function handleSessions(
   dir: string, source: string, range: string, project: string | undefined,
   bucket: string | undefined, json: boolean
 ): string {
   const now = new Date();
   const after = parseRange(range, now);
-  const events = readEvents(dir, source, { after, project });
+  const events = loadEvents(dir, source, after, project);
 
   if (bucket) {
     if (bucket !== "hour" && bucket !== "day") {
@@ -58,7 +69,7 @@ function handleSummary(
   }
   const now = new Date();
   const after = parseRange(range, now);
-  const events = readEvents(dir, source, { after, project });
+  const events = loadEvents(dir, source, after, project);
   const bucketSize = (bucket as "hour" | "day" | undefined) ?? "hour";
   const summary = aggregateSummary(events, source, after, now, bucketSize);
   if (json) return JSON.stringify(summary, null, 2);
@@ -134,7 +145,7 @@ Usage:
   pulse activity gc       [flags]   Remove old events
 
 Flags:
-  --source <name>     Event source (default: mpg)
+  --source <name>     Event source: claude (default), mpg
   --range <duration>  Time range: 7d, 24h, 30m (default: 7d)
   --project <key>     Filter by project key
   --bucket <size>     Bucket by: hour, day (sessions, summary)
