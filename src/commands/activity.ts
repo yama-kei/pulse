@@ -2,7 +2,7 @@ import { readEvents, eventsFilePath } from "../activity/reader.js";
 import { aggregateSessions, aggregateSummary, bucketSessions } from "../activity/aggregator.js";
 import { parseRange } from "../activity/range.js";
 import { GcResult } from "../types/pulse.js";
-import { writeFileSync, existsSync } from "node:fs";
+import { writeFileSync, existsSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -36,8 +36,10 @@ function handleSessions(
   const events = readEvents(dir, source, { after, project });
 
   if (bucket) {
-    const bucketSize = bucket === "day" ? "day" : "hour";
-    const result = bucketSessions(events, bucketSize);
+    if (bucket !== "hour" && bucket !== "day") {
+      return `Error: --bucket must be "hour" or "day", got "${bucket}"`;
+    }
+    const result = bucketSessions(events, bucket);
     if (json) return JSON.stringify(result, null, 2);
     return formatBucketed(result);
   }
@@ -69,7 +71,9 @@ function handleGc(dir: string, source: string, retain: string, dryRun: boolean):
     const filePath = eventsFilePath(dir, source);
     if (existsSync(filePath)) {
       const lines = kept.map(e => JSON.stringify(e));
-      writeFileSync(filePath, lines.length > 0 ? lines.join("\n") + "\n" : "");
+      const tmpPath = filePath + ".tmp";
+      writeFileSync(tmpPath, lines.length > 0 ? lines.join("\n") + "\n" : "");
+      renameSync(tmpPath, filePath);
     }
   }
 

@@ -22,10 +22,11 @@ export function readEvents(
     const trimmed = line.trim();
     if (!trimmed) continue;
     try {
-      const parsed = JSON.parse(trimmed) as MpgSessionEvent;
+      const parsed = JSON.parse(trimmed);
+      if (!parsed.session_id || !parsed.event_type || !parsed.timestamp) continue;
       if (options.after && new Date(parsed.timestamp) < options.after) continue;
       if (options.project && parsed.project_key !== options.project) continue;
-      events.push(parsed);
+      events.push(parsed as MpgSessionEvent);
     } catch {
       // skip malformed lines
     }

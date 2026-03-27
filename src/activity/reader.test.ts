@@ -64,6 +64,18 @@ describe("readEvents", () => {
     assert.equal(events[0].session_id, "s2");
   });
 
+  it("skips valid JSON missing required fields", () => {
+    const dir = createEventsDir([
+      JSON.stringify({ foo: "bar" }),
+      JSON.stringify({ session_id: "s1", event_type: "session_start" }),
+      JSON.stringify({ schema_version: 1, timestamp: "2026-03-27T10:00:00Z", event_type: "session_start", session_id: "s1", project_key: "proj", project_dir: "/tmp" }),
+    ]);
+    const events = readEvents(dir, "mpg");
+    assert.equal(events.length, 1);
+    assert.equal(events[0].session_id, "s1");
+    assert.equal(events[0].project_key, "proj");
+  });
+
   it("filters events by project", () => {
     const dir = createEventsDir([
       JSON.stringify({ schema_version: 1, timestamp: "2026-03-27T10:00:00Z", event_type: "session_start", session_id: "s1", project_key: "alpha", project_dir: "/tmp/a" }),
