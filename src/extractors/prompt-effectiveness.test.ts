@@ -5,7 +5,7 @@ import {
 } from "./prompt-effectiveness.js";
 import { PromptEvent } from "../types/pulse.js";
 import { strict as assert } from "node:assert";
-import { describe, it, afterEach } from "node:test";
+import { describe, it, afterEach, mock } from "node:test";
 import { writeFileSync, mkdtempSync, unlinkSync, rmdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -97,6 +97,65 @@ describe("prompt-effectiveness scoring (stage 2)", () => {
     assert.equal(result.available, false);
     assert.deepEqual(result.events, []);
     assert.equal(result.overallScore, 0);
+  });
+
+  it("produces scored signal from mocked LLM response", async () => {
+    const session = createSessionFile([
+      { type: "user", content: "Here is src/app.ts — it has a null pointer on line 42. Please fix the null check." },
+      { type: "assistant", content: "I see the issue..." },
+      { type: "user", content: "Also add a test for that fix in app.test.ts" },
+      { type: "assistant", content: "Done" },
+      { type: "user", content: "The test is missing the edge case where input is undefined. Add that assertion." },
+    ]);
+
+    const mockResponse = JSON.stringify({
+      events: [
+        { messageIndex: 0, eventType: "PROVIDED_CONTEXT", reasoning: "shared file and line" },
+        { messageIndex: 0, eventType: "SCOPED_REQUEST", reasoning: "specific fix request" },
+        { messageIndex: 1, eventType: "SCOPED_REQUEST", reasoning: "bounded follow-up" },
+        { messageIndex: 2, eventType: "GAVE_ACTIONABLE_FEEDBACK", reasoning: "specific missing case" },
+      ],
+    });
+
+    const originalKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "test-key";
+
+    const mockFetch = mock.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: mockResponse } }],
+      }),
+    }));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mockFetch as any;
+
+    try {
+      const result = await extractPromptEffectiveness(session);
+
+      assert.equal(result.available, true);
+      assert.equal(result.events.length, 4);
+      assert.ok(result.overallScore > 0, `overallScore should be > 0, got ${result.overallScore}`);
+      assert.ok(result.scores.contextProvision > 0, `contextProvision should be > 0`);
+      assert.equal(result.scores.scopeDiscipline, 1); // 2 scoped, 0 vague
+      assert.equal(result.scores.feedbackQuality, 1); // 1 actionable, 0 vague
+      assert.ok(["excellent", "good", "moderate", "developing"].includes(result.rating));
+      assert.ok(result.observation.includes("3 messages analyzed"));
+
+      // Verify fetch was called with correct model and auth
+      assert.equal(mockFetch.mock.callCount(), 1);
+      const [url, opts] = mockFetch.mock.calls[0].arguments as unknown as [string, any];
+      assert.ok(url.includes("/chat/completions"));
+      assert.equal(opts.headers.Authorization, "Bearer test-key");
+      const body = JSON.parse(opts.body);
+      assert.equal(body.model, "gpt-4o");
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalKey !== undefined) {
+        process.env.OPENAI_API_KEY = originalKey;
+      } else {
+        delete process.env.OPENAI_API_KEY;
+      }
+    }
   });
 
   it("returns unavailable signal when OPENAI_API_KEY not set", async () => {

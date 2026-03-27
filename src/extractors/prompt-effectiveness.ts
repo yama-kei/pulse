@@ -219,6 +219,10 @@ async function extractTrace(messages: string[]): Promise<PromptEvent[]> {
     .map((m, i) => `[${i}] ${m}`)
     .join("\n\n");
 
+  process.stderr.write(
+    `Calling GPT-4o for prompt effectiveness analysis (${messages.length} messages)...\n`
+  );
+
   const response = await chatCompletion(
     "gpt-4o",
     [

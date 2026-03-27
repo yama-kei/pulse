@@ -204,7 +204,7 @@ function generateNudges(report: PulseReport): string[] {
 
   if (report.promptEffectiveness.available) {
     const pe = report.promptEffectiveness;
-    if (pe.scores.scopeDiscipline < 0.3) {
+    if (pe.scores.scopeDiscipline < 0.3 && c.exchanges > 3) {
       nudges.push("Many requests lack clear scope. Try stating what 'done' looks like before asking the agent to start.");
     }
     if (pe.scores.contextProvision < 0.2 && c.exchanges > 3) {
