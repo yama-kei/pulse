@@ -228,7 +228,12 @@ async function extractTrace(messages: string[]): Promise<PromptEvent[]> {
     { temperature: 0, timeout: 60000 }
   );
 
-  const parsed = JSON.parse(response);
+  let parsed: any;
+  try {
+    parsed = JSON.parse(response);
+  } catch {
+    return [];
+  }
   if (!Array.isArray(parsed.events)) return [];
 
   // Validate and filter events

@@ -3,7 +3,7 @@ import {
   rateOverall,
   extractPromptEffectiveness,
 } from "./prompt-effectiveness.js";
-import { PromptEvent, EffectivenessScores } from "../types/pulse.js";
+import { PromptEvent } from "../types/pulse.js";
 import { strict as assert } from "node:assert";
 import { describe, it, afterEach } from "node:test";
 import { writeFileSync, mkdtempSync, unlinkSync, rmdirSync } from "node:fs";
