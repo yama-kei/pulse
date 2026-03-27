@@ -125,6 +125,7 @@ function parseSessionMessages(sessionPath: string): {
         // Extract text content
         const text = extractText(msg);
         if (!text || text.trim().length === 0) continue;
+        if (isSystemMessage(text)) continue;
 
         exchanges++;
 
@@ -153,6 +154,14 @@ function extractText(msg: SessionMessage): string {
       .join(" ");
   }
   return "";
+}
+
+/** Filter out system/skill messages that have type "user" but aren't human input */
+function isSystemMessage(text: string): boolean {
+  return (
+    text.startsWith("Base directory for this skill:") ||
+    text.includes("/.claude/plugins/")
+  );
 }
 
 function round(n: number, decimals: number): number {

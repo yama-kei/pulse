@@ -5,6 +5,7 @@ export interface PulseReport {
   convergence: ConvergenceSignal;
   intentAnchoring: IntentAnchoringSignal;
   decisionQuality: DecisionQualitySignal;
+  interactionPattern: InteractionPatternSignal;
   interactionLeverage: "HIGH" | "MEDIUM" | "LOW";
 }
 
@@ -50,6 +51,15 @@ export interface IntentLayerCheckResult {
   commitCoverage: { referenced: number; total: number; percent: number };
   warnings: string[];
   fatals: string[];
+}
+
+export interface InteractionPatternSignal {
+  /** User's interaction style with the agent */
+  userStyle: "directive" | "collaborative" | "exploratory";
+  /** How the user provides context to the agent */
+  contextProvision: "structured" | "inline" | "vague";
+  /** 1-2 sentence qualitative observation */
+  observation: string;
 }
 
 export interface DecisionQualitySignal {
