@@ -1,172 +1,140 @@
-import {
-  SessionEvent,
-  SessionStartEvent,
-  SessionEndEvent,
-  ActivitySessions,
-  ActivitySummary,
-  BucketSize,
-} from "../types/pulse.js";
+import { MpgSessionEvent, ActivitySession, ActivitySummary, BucketedSessions } from "../types/pulse.js";
 
-export function aggregateSessions(
-  source: string,
-  events: SessionEvent[],
-  filters: Record<string, string | undefined>
-): ActivitySessions {
-  return { source, filters, events };
+export function aggregateSessions(events: MpgSessionEvent[]): ActivitySession[] {
+  const sessionMap = new Map<string, {
+    project_key: string;
+    project_dir: string;
+    started_at: string;
+    ended_at: string | null;
+    duration_ms: number | null;
+    message_count: number;
+    idle_count: number;
+    resume_count: number;
+  }>();
+
+  for (const e of events) {
+    if (!sessionMap.has(e.session_id)) {
+      sessionMap.set(e.session_id, {
+        project_key: e.project_key,
+        project_dir: e.project_dir,
+        started_at: e.timestamp,
+        ended_at: null,
+        duration_ms: null,
+        message_count: 0,
+        idle_count: 0,
+        resume_count: 0,
+      });
+    }
+    const s = sessionMap.get(e.session_id)!;
+    switch (e.event_type) {
+      case "session_start":
+        s.started_at = e.timestamp;
+        break;
+      case "session_end":
+        s.ended_at = e.timestamp;
+        s.duration_ms = e.duration_ms ?? null;
+        break;
+      case "message_routed":
+        s.message_count++;
+        break;
+      case "session_idle":
+        s.idle_count++;
+        break;
+      case "session_resume":
+        s.resume_count++;
+        break;
+    }
+  }
+
+  return Array.from(sessionMap.entries()).map(([session_id, s]) => ({
+    session_id,
+    ...s,
+  }));
 }
 
 export function aggregateSummary(
+  events: MpgSessionEvent[],
   source: string,
-  events: SessionEvent[],
-  bucket: BucketSize,
-  filters: Record<string, string | undefined>
+  rangeStart: Date,
+  rangeEnd: Date
 ): ActivitySummary {
+  const sessions = aggregateSessions(events);
+  const durations = sessions
+    .map(s => s.duration_ms)
+    .filter((d): d is number => d !== null);
+
+  const totalMessages = sessions.reduce((sum, s) => sum + s.message_count, 0);
+
+  const projects: Record<string, { sessions: number; messages: number }> = {};
+  for (const s of sessions) {
+    if (!projects[s.project_key]) {
+      projects[s.project_key] = { sessions: 0, messages: 0 };
+    }
+    projects[s.project_key].sessions++;
+    projects[s.project_key].messages += s.message_count;
+  }
+
   return {
     source,
-    filters,
-    bucket,
-    sessions_per_bucket: computeSessionsPerBucket(events, bucket),
-    duration_stats: computeDurationStats(events),
-    message_volume: computeMessageVolume(events, bucket),
-    persona_breakdown: computePersonaBreakdown(events),
-    peak_concurrent: computePeakConcurrent(events, bucket),
+    range_start: rangeStart.toISOString(),
+    range_end: rangeEnd.toISOString(),
+    total_sessions: sessions.length,
+    total_messages: totalMessages,
+    avg_duration_ms: durations.length > 0
+      ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length)
+      : null,
+    median_duration_ms: median(durations),
+    projects,
+    peak_concurrent: computePeakConcurrent(events),
   };
 }
 
-function truncateToBucket(timestamp: string, bucket: BucketSize): string {
-  const d = new Date(timestamp);
-  if (bucket === "hour") {
-    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}`;
-  }
-  if (bucket === "day") {
-    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
-  }
-  // week: Monday-based ISO week start
-  const day = d.getUTCDay();
-  const mondayOffset = day === 0 ? 6 : day - 1;
-  const monday = new Date(d);
-  monday.setUTCDate(d.getUTCDate() - mondayOffset);
-  return `${monday.getUTCFullYear()}-W${pad(getISOWeek(monday))}`;
-}
-
-function getISOWeek(d: Date): number {
-  const jan4 = new Date(Date.UTC(d.getUTCFullYear(), 0, 4));
-  const dayOfYear = Math.floor((d.getTime() - jan4.getTime()) / 86400000) + 4;
-  return Math.ceil(dayOfYear / 7);
-}
-
-function pad(n: number): string {
-  return n < 10 ? `0${n}` : `${n}`;
-}
-
-function computeSessionsPerBucket(events: SessionEvent[], bucket: BucketSize): ActivitySummary["sessions_per_bucket"] {
-  const starts = events.filter((e): e is SessionStartEvent => e.event_type === "session_start");
-  const map = new Map<string, number>();
-
-  for (const e of starts) {
-    const key = `${truncateToBucket(e.timestamp, bucket)}\0${e.project_key}`;
-    map.set(key, (map.get(key) || 0) + 1);
-  }
-
-  return Array.from(map.entries()).map(([key, count]) => {
-    const sep = key.indexOf("\0");
-    return { bucket: key.slice(0, sep), project_key: key.slice(sep + 1), count };
-  });
-}
-
-function computeDurationStats(events: SessionEvent[]): ActivitySummary["duration_stats"] {
-  const ends = events.filter((e): e is SessionEndEvent => e.event_type === "session_end");
-  const byProject = new Map<string, number[]>();
-
-  for (const e of ends) {
-    const durations = byProject.get(e.project_key) || [];
-    durations.push(e.duration_ms);
-    byProject.set(e.project_key, durations);
-  }
-
-  return Array.from(byProject.entries()).map(([project_key, durations]) => {
-    durations.sort((a, b) => a - b);
-    const avg_ms = Math.round(durations.reduce((s, d) => s + d, 0) / durations.length);
-    const median_ms = percentile(durations, 50);
-    const p95_ms = percentile(durations, 95);
-    return { project_key, avg_ms, median_ms, p95_ms };
-  });
-}
-
-function percentile(sorted: number[], p: number): number {
-  if (sorted.length === 0) return 0;
-  const idx = (p / 100) * (sorted.length - 1);
-  const lower = Math.floor(idx);
-  const upper = Math.ceil(idx);
-  if (lower === upper) return sorted[lower];
-  return Math.round(sorted[lower] + (sorted[upper] - sorted[lower]) * (idx - lower));
-}
-
-function computeMessageVolume(events: SessionEvent[], bucket: BucketSize): ActivitySummary["message_volume"] {
-  const routed = events.filter(e => e.event_type === "message_routed");
-  const map = new Map<string, number>();
-
-  for (const e of routed) {
-    const key = `${truncateToBucket(e.timestamp, bucket)}\0${e.project_key}`;
-    map.set(key, (map.get(key) || 0) + 1);
-  }
-
-  return Array.from(map.entries()).map(([key, count]) => {
-    const sep = key.indexOf("\0");
-    return { bucket: key.slice(0, sep), project_key: key.slice(sep + 1), count };
-  });
-}
-
-function computePersonaBreakdown(events: SessionEvent[]): ActivitySummary["persona_breakdown"] {
-  const starts = events.filter((e): e is SessionStartEvent => e.event_type === "session_start");
-  const map = new Map<string, number>();
-
-  for (const e of starts) {
-    const agent = e.agent_name || "(none)";
-    const key = `${e.project_key}\0${agent}`;
-    map.set(key, (map.get(key) || 0) + 1);
-  }
-
-  return Array.from(map.entries()).map(([key, count]) => {
-    const sep = key.indexOf("\0");
-    return { project_key: key.slice(0, sep), agent: key.slice(sep + 1), count };
-  });
-}
-
-function computePeakConcurrent(events: SessionEvent[], bucket: BucketSize): ActivitySummary["peak_concurrent"] {
+export function bucketSessions(
+  events: MpgSessionEvent[],
+  bucketSize: "hour" | "day"
+): BucketedSessions {
   const starts = events.filter(e => e.event_type === "session_start");
-  const ends = events.filter((e): e is SessionEndEvent => e.event_type === "session_end");
+  const bucketMap = new Map<string, number>();
 
-  const endBySession = new Map<string, string>();
-  for (const e of ends) {
-    endBySession.set(e.session_id, e.timestamp);
+  for (const e of starts) {
+    const key = bucketSize === "hour"
+      ? e.timestamp.slice(0, 13)
+      : e.timestamp.slice(0, 10);
+    bucketMap.set(key, (bucketMap.get(key) ?? 0) + 1);
   }
 
-  type TimePoint = { time: number; delta: number };
-  const bucketPoints = new Map<string, TimePoint[]>();
+  const buckets = Array.from(bucketMap.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([bucket, session_count]) => ({ bucket, session_count }));
 
-  for (const s of starts) {
-    const b = truncateToBucket(s.timestamp, bucket);
-    const points = bucketPoints.get(b) || [];
-    const startTime = new Date(s.timestamp).getTime();
-    points.push({ time: startTime, delta: 1 });
+  return { bucket_size: bucketSize, buckets };
+}
 
-    const endTs = endBySession.get(s.session_id);
-    if (endTs) {
-      points.push({ time: new Date(endTs).getTime(), delta: -1 });
+function median(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) return sorted[mid];
+  return Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+}
+
+function computePeakConcurrent(events: MpgSessionEvent[]): number {
+  const deltas: Array<{ time: number; delta: number }> = [];
+  for (const e of events) {
+    const time = new Date(e.timestamp).getTime();
+    if (e.event_type === "session_start" || e.event_type === "session_resume") {
+      deltas.push({ time, delta: 1 });
+    } else if (e.event_type === "session_end" || e.event_type === "session_idle") {
+      deltas.push({ time, delta: -1 });
     }
-
-    bucketPoints.set(b, points);
   }
+  deltas.sort((a, b) => a.time - b.time || b.delta - a.delta);
 
-  return Array.from(bucketPoints.entries()).map(([b, points]) => {
-    points.sort((a, b) => a.time - b.time || a.delta - b.delta);
-    let current = 0;
-    let max = 0;
-    for (const p of points) {
-      current += p.delta;
-      if (current > max) max = current;
-    }
-    return { bucket: b, max_concurrent: max };
-  });
+  let current = 0;
+  let peak = 0;
+  for (const { delta } of deltas) {
+    current += delta;
+    if (current > peak) peak = current;
+  }
+  return peak;
 }

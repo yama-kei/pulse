@@ -141,75 +141,53 @@ export interface DecisionQualitySignal {
   commitMessages: string[];
 }
 
-// --- Session Event Types (for MPG activity tracking) ---
+// ── Activity event types (issue #10) ──────────────────────────
 
-export type SessionEventType =
-  | "session_start"
-  | "session_end"
-  | "session_idle"
-  | "session_resume"
-  | "message_routed";
-
-interface SessionEventBase {
+export interface MpgSessionEvent {
   schema_version: number;
   timestamp: string;
-  event_type: SessionEventType;
+  event_type: "session_start" | "session_end" | "session_idle" | "session_resume" | "message_routed";
   session_id: string;
   project_key: string;
   project_dir: string;
+  /** Only on session_end */
+  duration_ms?: number;
+  /** Only on message_routed */
+  persona?: string;
 }
 
-export interface SessionStartEvent extends SessionEventBase {
-  event_type: "session_start";
-  agent_name?: string;
-  trigger_source: string;
-}
-
-export interface SessionEndEvent extends SessionEventBase {
-  event_type: "session_end";
-  duration_ms: number;
+export interface ActivitySession {
+  session_id: string;
+  project_key: string;
+  project_dir: string;
+  started_at: string;
+  ended_at: string | null;
+  duration_ms: number | null;
   message_count: number;
+  idle_count: number;
+  resume_count: number;
 }
-
-export interface SessionIdleEvent extends SessionEventBase {
-  event_type: "session_idle";
-  duration_ms: number;
-  message_count: number;
-}
-
-export interface SessionResumeEvent extends SessionEventBase {
-  event_type: "session_resume";
-  idle_duration_ms: number;
-}
-
-export interface MessageRoutedEvent extends SessionEventBase {
-  event_type: "message_routed";
-  agent_target?: string;
-  queue_depth: number;
-}
-
-export type SessionEvent =
-  | SessionStartEvent
-  | SessionEndEvent
-  | SessionIdleEvent
-  | SessionResumeEvent
-  | MessageRoutedEvent;
-
-export interface ActivitySessions {
-  source: string;
-  filters: Record<string, string | undefined>;
-  events: SessionEvent[];
-}
-
-export type BucketSize = "hour" | "day" | "week";
 
 export interface ActivitySummary {
   source: string;
-  filters: Record<string, string | undefined>;
-  bucket: BucketSize;
-  sessions_per_bucket: { bucket: string; project_key: string; count: number }[];
-  duration_stats: { project_key: string; avg_ms: number; median_ms: number; p95_ms: number }[];
-  message_volume: { bucket: string; project_key: string; count: number }[];
-  persona_breakdown: { project_key: string; agent: string; count: number }[];
-  peak_concurrent: { bucket: string; max_concurrent: number }[];
+  range_start: string;
+  range_end: string;
+  total_sessions: number;
+  total_messages: number;
+  avg_duration_ms: number | null;
+  median_duration_ms: number | null;
+  projects: Record<string, { sessions: number; messages: number }>;
+  peak_concurrent: number;
+}
+
+export interface BucketedSessions {
+  bucket_size: string;
+  buckets: Array<{ bucket: string; session_count: number }>;
+}
+
+export interface GcResult {
+  source: string;
+  removed: number;
+  retained: number;
+  dry_run: boolean;
 }
