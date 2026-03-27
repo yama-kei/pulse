@@ -5,7 +5,23 @@ export interface PulseReport {
   convergence: ConvergenceSignal;
   intentAnchoring: IntentAnchoringSignal;
   decisionQuality: DecisionQualitySignal;
+  tokenUsage: TokenUsageSignal;
   interactionLeverage: "HIGH" | "MEDIUM" | "LOW";
+}
+
+export interface TokenUsageSignal {
+  /** Total input tokens across session */
+  inputTokens: number;
+  /** Total output tokens across session */
+  outputTokens: number;
+  /** inputTokens + outputTokens */
+  totalTokens: number;
+  /** totalTokens / exchanges — derived ratio */
+  tokensPerExchange: number;
+  /** totalTokens / outcomes — derived ratio */
+  tokensPerOutcome: number;
+  /** Whether token data was found in the session */
+  available: boolean;
 }
 
 export interface ConvergenceSignal {
