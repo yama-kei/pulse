@@ -119,23 +119,19 @@ export function runActivitySummary(args: string[]): void {
   }
 }
 
-export function runActivityGc(args: string[]): void {
-  const source = parseFlag(args, "--source") || "mpg-sessions";
-  const retention = parseFlag(args, "--retention") || "30d";
-  const dryRun = args.includes("--dry-run");
+export interface GcResult {
+  removed: number;
+  kept: number;
+}
 
-  const dir = join(homedir(), ".pulse", "events");
-  const filePath = join(dir, `${source}.jsonl`);
-
+export function gcEvents(filePath: string, cutoff: Date, dryRun: boolean): GcResult {
   let content: string;
   try {
     content = readFileSync(filePath, "utf-8");
   } catch {
-    console.log("No events file found. Nothing to do.");
-    return;
+    return { removed: 0, kept: 0 };
   }
 
-  const cutoff = parseRange(retention);
   const lines = content.split("\n");
   const kept: string[] = [];
   let removed = 0;
@@ -159,12 +155,34 @@ export function runActivityGc(args: string[]): void {
     kept.push(trimmed);
   }
 
-  if (dryRun) {
-    console.log(`Would remove ${removed} event(s) older than ${retention}.`);
-    console.log(`Would keep ${kept.length} event(s).`);
+  if (!dryRun) {
+    writeFileSync(filePath, kept.length > 0 ? kept.join("\n") + "\n" : "");
+  }
+
+  return { removed, kept: kept.length };
+}
+
+export function runActivityGc(args: string[]): void {
+  const source = parseFlag(args, "--source") || "mpg-sessions";
+  const retention = parseFlag(args, "--retention") || "30d";
+  const dryRun = args.includes("--dry-run");
+
+  const dir = join(homedir(), ".pulse", "events");
+  const filePath = join(dir, `${source}.jsonl`);
+
+  const cutoff = parseRange(retention);
+  const result = gcEvents(filePath, cutoff, dryRun);
+
+  if (result.removed === 0 && result.kept === 0) {
+    console.log("No events file found. Nothing to do.");
     return;
   }
 
-  writeFileSync(filePath, kept.length > 0 ? kept.join("\n") + "\n" : "");
-  console.log(`Removed ${removed} event(s) older than ${retention}. ${kept.length} remaining.`);
+  if (dryRun) {
+    console.log(`Would remove ${result.removed} event(s) older than ${retention}.`);
+    console.log(`Would keep ${result.kept} event(s).`);
+    return;
+  }
+
+  console.log(`Removed ${result.removed} event(s) older than ${retention}. ${result.kept} remaining.`);
 }

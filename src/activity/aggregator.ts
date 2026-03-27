@@ -64,13 +64,13 @@ function computeSessionsPerBucket(events: SessionEvent[], bucket: BucketSize): A
   const map = new Map<string, number>();
 
   for (const e of starts) {
-    const key = `${truncateToBucket(e.timestamp, bucket)}|${e.project_key}`;
+    const key = `${truncateToBucket(e.timestamp, bucket)}\0${e.project_key}`;
     map.set(key, (map.get(key) || 0) + 1);
   }
 
   return Array.from(map.entries()).map(([key, count]) => {
-    const [b, project_key] = key.split("|");
-    return { bucket: b, project_key, count };
+    const sep = key.indexOf("\0");
+    return { bucket: key.slice(0, sep), project_key: key.slice(sep + 1), count };
   });
 }
 
@@ -107,13 +107,13 @@ function computeMessageVolume(events: SessionEvent[], bucket: BucketSize): Activ
   const map = new Map<string, number>();
 
   for (const e of routed) {
-    const key = `${truncateToBucket(e.timestamp, bucket)}|${e.project_key}`;
+    const key = `${truncateToBucket(e.timestamp, bucket)}\0${e.project_key}`;
     map.set(key, (map.get(key) || 0) + 1);
   }
 
   return Array.from(map.entries()).map(([key, count]) => {
-    const [b, project_key] = key.split("|");
-    return { bucket: b, project_key, count };
+    const sep = key.indexOf("\0");
+    return { bucket: key.slice(0, sep), project_key: key.slice(sep + 1), count };
   });
 }
 
@@ -123,13 +123,13 @@ function computePersonaBreakdown(events: SessionEvent[]): ActivitySummary["perso
 
   for (const e of starts) {
     const agent = e.agent_name || "(none)";
-    const key = `${e.project_key}|${agent}`;
+    const key = `${e.project_key}\0${agent}`;
     map.set(key, (map.get(key) || 0) + 1);
   }
 
   return Array.from(map.entries()).map(([key, count]) => {
-    const [project_key, agent] = key.split("|");
-    return { project_key, agent, count };
+    const sep = key.indexOf("\0");
+    return { project_key: key.slice(0, sep), agent: key.slice(sep + 1), count };
   });
 }
 

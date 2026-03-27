@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { readEvents } from "./reader.js";
 import { aggregateSessions, aggregateSummary } from "./aggregator.js";
+import { gcEvents } from "../commands/activity.js";
 
 let tmpDirs: string[] = [];
 
@@ -89,7 +90,7 @@ describe("end-to-end: reader → aggregator pipeline", () => {
     assert.equal(result.persona_breakdown.find(p => p.agent === "coder")?.count, 1);
   });
 
-  it("gc removes old events and keeps recent ones", () => {
+  it("gcEvents removes old events and keeps recent ones", () => {
     const { eventsDir } = setupEventsDir();
     const filePath = join(eventsDir, "test-gc.jsonl");
 
@@ -113,24 +114,48 @@ describe("end-to-end: reader → aggregator pipeline", () => {
     });
     writeFileSync(filePath, [old, recent].join("\n") + "\n");
 
-    // Simulate gc: read, filter, rewrite
-    const content = readFileSync(filePath, "utf-8");
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - 30);
-    const kept = content.split("\n").filter(line => {
-      const trimmed = line.trim();
-      if (!trimmed) return false;
-      try {
-        const parsed = JSON.parse(trimmed);
-        return new Date(parsed.timestamp) >= cutoff;
-      } catch {
-        return true;
-      }
-    });
-    writeFileSync(filePath, kept.join("\n") + "\n");
+    const result = gcEvents(filePath, cutoff, false);
+
+    assert.equal(result.removed, 1);
+    assert.equal(result.kept, 1);
 
     const remaining = readFileSync(filePath, "utf-8").split("\n").filter(l => l.trim());
     assert.equal(remaining.length, 1);
     assert.ok(remaining[0].includes('"new"'));
+  });
+
+  it("gcEvents returns zeros for missing file", () => {
+    const result = gcEvents("/tmp/no-such-file.jsonl", new Date(), false);
+    assert.equal(result.removed, 0);
+    assert.equal(result.kept, 0);
+  });
+
+  it("gcEvents dry-run does not modify file", () => {
+    const { eventsDir } = setupEventsDir();
+    const filePath = join(eventsDir, "test-gc-dry.jsonl");
+
+    const old = JSON.stringify({
+      schema_version: 1,
+      timestamp: "2020-01-01T00:00:00Z",
+      event_type: "session_start",
+      session_id: "old",
+      project_key: "proj",
+      project_dir: "/tmp/proj",
+      trigger_source: "chan-1",
+    });
+    writeFileSync(filePath, old + "\n");
+
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 30);
+    const result = gcEvents(filePath, cutoff, true);
+
+    assert.equal(result.removed, 1);
+    assert.equal(result.kept, 0);
+
+    // File should be unchanged
+    const content = readFileSync(filePath, "utf-8").split("\n").filter(l => l.trim());
+    assert.equal(content.length, 1);
   });
 });
