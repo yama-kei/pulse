@@ -1,200 +1,76 @@
 import { describe, it, afterEach } from "node:test";
 import * as assert from "node:assert/strict";
 import { readEvents } from "./reader.js";
-import { writeFileSync, mkdtempSync, mkdirSync, unlinkSync, rmdirSync, rmSync } from "node:fs";
+import { writeFileSync, mkdtempSync, unlinkSync, rmdirSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 let tmpDirs: string[] = [];
 
-function createEventsDir(): string {
+function createEventsDir(lines: string[]): string {
   const dir = mkdtempSync(join(tmpdir(), "pulse-reader-test-"));
   const eventsDir = join(dir, "events");
   mkdirSync(eventsDir, { recursive: true });
+  writeFileSync(join(eventsDir, "mpg-sessions.jsonl"), lines.join("\n") + "\n");
   tmpDirs.push(dir);
   return dir;
 }
 
-function writeJsonl(dir: string, source: string, lines: string[]): void {
-  writeFileSync(join(dir, "events", `${source}.jsonl`), lines.join("\n") + "\n");
-}
-
 afterEach(() => {
-  for (const d of tmpDirs) { try { rmSync(d, { recursive: true }); } catch {} }
+  for (const d of tmpDirs) {
+    try {
+      const { execSync } = require("node:child_process");
+      execSync(`rm -rf "${d}"`);
+    } catch {}
+  }
   tmpDirs = [];
 });
 
 describe("readEvents", () => {
-  it("returns empty array for missing file", () => {
-    const result = readEvents("nonexistent", { eventsDir: "/tmp/no-such-dir/events" });
-    assert.deepEqual(result, []);
+  it("returns empty array when file does not exist", () => {
+    const events = readEvents("/nonexistent/path", "mpg");
+    assert.deepStrictEqual(events, []);
   });
 
-  it("returns empty array for empty file", () => {
-    const base = createEventsDir();
-    writeFileSync(join(base, "events", "test.jsonl"), "");
-    const result = readEvents("test", { eventsDir: join(base, "events") });
-    assert.deepEqual(result, []);
-  });
-
-  it("parses valid session events", () => {
-    const base = createEventsDir();
-    const event = JSON.stringify({
-      schema_version: 1,
-      timestamp: "2026-03-26T10:00:00Z",
-      event_type: "session_start",
-      session_id: "s1",
-      project_key: "proj-a",
-      project_dir: "/tmp/proj-a",
-      trigger_source: "chan-1",
-    });
-    writeJsonl(base, "test", [event]);
-    const result = readEvents("test", { eventsDir: join(base, "events") });
-    assert.equal(result.length, 1);
-    assert.equal(result[0].event_type, "session_start");
-    assert.equal(result[0].session_id, "s1");
+  it("reads and parses valid JSONL", () => {
+    const dir = createEventsDir([
+      JSON.stringify({ schema_version: 1, timestamp: "2026-03-27T10:00:00Z", event_type: "session_start", session_id: "s1", project_key: "proj", project_dir: "/tmp" }),
+      JSON.stringify({ schema_version: 1, timestamp: "2026-03-27T10:05:00Z", event_type: "message_routed", session_id: "s1", project_key: "proj", project_dir: "/tmp" }),
+    ]);
+    const events = readEvents(dir, "mpg");
+    assert.equal(events.length, 2);
+    assert.equal(events[0].event_type, "session_start");
+    assert.equal(events[1].event_type, "message_routed");
   });
 
   it("skips malformed lines without throwing", () => {
-    const base = createEventsDir();
-    const good = JSON.stringify({
-      schema_version: 1,
-      timestamp: "2026-03-26T10:00:00Z",
-      event_type: "session_start",
-      session_id: "s1",
-      project_key: "proj-a",
-      project_dir: "/tmp/proj-a",
-      trigger_source: "chan-1",
-    });
-    writeJsonl(base, "test", ["not json", good, "{incomplete"]);
-    const result = readEvents("test", { eventsDir: join(base, "events") });
-    assert.equal(result.length, 1);
-  });
-
-  it("skips events with unknown schema_version", () => {
-    const base = createEventsDir();
-    const v1 = JSON.stringify({
-      schema_version: 1,
-      timestamp: "2026-03-26T10:00:00Z",
-      event_type: "session_start",
-      session_id: "s1",
-      project_key: "proj-a",
-      project_dir: "/tmp/proj-a",
-      trigger_source: "chan-1",
-    });
-    const v99 = JSON.stringify({
-      schema_version: 99,
-      timestamp: "2026-03-26T11:00:00Z",
-      event_type: "session_start",
-      session_id: "s2",
-      project_key: "proj-a",
-      project_dir: "/tmp/proj-a",
-      trigger_source: "chan-1",
-    });
-    writeJsonl(base, "test", [v1, v99]);
-    const result = readEvents("test", { eventsDir: join(base, "events") });
-    assert.equal(result.length, 1);
-    assert.equal(result[0].session_id, "s1");
-  });
-
-  it("filters by time range (since/until)", () => {
-    const base = createEventsDir();
-    const makeEvent = (ts: string, id: string) => JSON.stringify({
-      schema_version: 1,
-      timestamp: ts,
-      event_type: "session_start",
-      session_id: id,
-      project_key: "proj-a",
-      project_dir: "/tmp/proj-a",
-      trigger_source: "chan-1",
-    });
-    writeJsonl(base, "test", [
-      makeEvent("2026-03-20T10:00:00Z", "old"),
-      makeEvent("2026-03-25T10:00:00Z", "mid"),
-      makeEvent("2026-03-27T10:00:00Z", "new"),
+    const dir = createEventsDir([
+      "not json",
+      JSON.stringify({ schema_version: 1, timestamp: "2026-03-27T10:00:00Z", event_type: "session_start", session_id: "s1", project_key: "proj", project_dir: "/tmp" }),
+      "",
     ]);
-    const result = readEvents("test", {
-      eventsDir: join(base, "events"),
-      since: new Date("2026-03-24T00:00:00Z"),
-      until: new Date("2026-03-26T00:00:00Z"),
-    });
-    assert.equal(result.length, 1);
-    assert.equal(result[0].session_id, "mid");
+    const events = readEvents(dir, "mpg");
+    assert.equal(events.length, 1);
   });
 
-  it("filters by project key", () => {
-    const base = createEventsDir();
-    const makeEvent = (proj: string, id: string) => JSON.stringify({
-      schema_version: 1,
-      timestamp: "2026-03-26T10:00:00Z",
-      event_type: "session_start",
-      session_id: id,
-      project_key: proj,
-      project_dir: `/tmp/${proj}`,
-      trigger_source: "chan-1",
-    });
-    writeJsonl(base, "test", [
-      makeEvent("proj-a", "s1"),
-      makeEvent("proj-b", "s2"),
-      makeEvent("proj-a", "s3"),
+  it("filters events by time range", () => {
+    const dir = createEventsDir([
+      JSON.stringify({ schema_version: 1, timestamp: "2026-03-20T10:00:00Z", event_type: "session_start", session_id: "s1", project_key: "proj", project_dir: "/tmp" }),
+      JSON.stringify({ schema_version: 1, timestamp: "2026-03-27T10:00:00Z", event_type: "session_start", session_id: "s2", project_key: "proj", project_dir: "/tmp" }),
     ]);
-    const result = readEvents("test", {
-      eventsDir: join(base, "events"),
-      projectKey: "proj-a",
-    });
-    assert.equal(result.length, 2);
-    assert.ok(result.every(e => e.project_key === "proj-a"));
+    const rangeStart = new Date("2026-03-25T00:00:00Z");
+    const events = readEvents(dir, "mpg", { after: rangeStart });
+    assert.equal(events.length, 1);
+    assert.equal(events[0].session_id, "s2");
   });
 
-  it("filters by event type", () => {
-    const base = createEventsDir();
-    const start = JSON.stringify({
-      schema_version: 1,
-      timestamp: "2026-03-26T10:00:00Z",
-      event_type: "session_start",
-      session_id: "s1",
-      project_key: "proj-a",
-      project_dir: "/tmp/proj-a",
-      trigger_source: "chan-1",
-    });
-    const end = JSON.stringify({
-      schema_version: 1,
-      timestamp: "2026-03-26T11:00:00Z",
-      event_type: "session_end",
-      session_id: "s1",
-      project_key: "proj-a",
-      project_dir: "/tmp/proj-a",
-      duration_ms: 3600000,
-      message_count: 10,
-    });
-    writeJsonl(base, "test", [start, end]);
-    const result = readEvents("test", {
-      eventsDir: join(base, "events"),
-      eventType: "session_end",
-    });
-    assert.equal(result.length, 1);
-    assert.equal(result[0].event_type, "session_end");
-  });
-
-  it("returns events sorted by timestamp", () => {
-    const base = createEventsDir();
-    const makeEvent = (ts: string, id: string) => JSON.stringify({
-      schema_version: 1,
-      timestamp: ts,
-      event_type: "session_start",
-      session_id: id,
-      project_key: "proj-a",
-      project_dir: "/tmp/proj-a",
-      trigger_source: "chan-1",
-    });
-    writeJsonl(base, "test", [
-      makeEvent("2026-03-26T12:00:00Z", "late"),
-      makeEvent("2026-03-26T08:00:00Z", "early"),
-      makeEvent("2026-03-26T10:00:00Z", "mid"),
+  it("filters events by project", () => {
+    const dir = createEventsDir([
+      JSON.stringify({ schema_version: 1, timestamp: "2026-03-27T10:00:00Z", event_type: "session_start", session_id: "s1", project_key: "alpha", project_dir: "/tmp/a" }),
+      JSON.stringify({ schema_version: 1, timestamp: "2026-03-27T10:01:00Z", event_type: "session_start", session_id: "s2", project_key: "beta", project_dir: "/tmp/b" }),
     ]);
-    const result = readEvents("test", { eventsDir: join(base, "events") });
-    assert.equal(result[0].session_id, "early");
-    assert.equal(result[1].session_id, "mid");
-    assert.equal(result[2].session_id, "late");
+    const events = readEvents(dir, "mpg", { project: "alpha" });
+    assert.equal(events.length, 1);
+    assert.equal(events[0].project_key, "alpha");
   });
 });

@@ -1,67 +1,39 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
-import { SessionEvent, SessionEventType } from "../types/pulse.js";
+import { MpgSessionEvent } from "../types/pulse.js";
 
-export interface ReadEventsOptions {
-  eventsDir?: string;
-  since?: Date;
-  until?: Date;
-  projectKey?: string;
-  eventType?: SessionEventType;
+export interface ReadOptions {
+  after?: Date;
+  project?: string;
 }
 
-const SUPPORTED_SCHEMA_VERSION = 1;
+export function readEvents(
+  baseDir: string,
+  source: string,
+  options: ReadOptions = {}
+): MpgSessionEvent[] {
+  const filePath = join(baseDir, "events", `${source}-sessions.jsonl`);
+  if (!existsSync(filePath)) return [];
 
-function defaultEventsDir(): string {
-  return join(homedir(), ".pulse", "events");
-}
+  const content = readFileSync(filePath, "utf-8");
+  const events: MpgSessionEvent[] = [];
 
-export function readEvents(source: string, options?: ReadEventsOptions): SessionEvent[] {
-  const dir = options?.eventsDir ?? defaultEventsDir();
-  const filePath = join(dir, `${source}.jsonl`);
-
-  let content: string;
-  try {
-    content = readFileSync(filePath, "utf-8");
-  } catch {
-    return [];
-  }
-
-  const events: SessionEvent[] = [];
-  const lines = content.split("\n");
-
-  for (const line of lines) {
+  for (const line of content.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-
-    let parsed: any;
     try {
-      parsed = JSON.parse(trimmed);
+      const parsed = JSON.parse(trimmed) as MpgSessionEvent;
+      if (options.after && new Date(parsed.timestamp) < options.after) continue;
+      if (options.project && parsed.project_key !== options.project) continue;
+      events.push(parsed);
     } catch {
-      process.stderr.write(`pulse: skipping malformed JSONL line\n`);
-      continue;
+      // skip malformed lines
     }
-
-    if (parsed.schema_version !== SUPPORTED_SCHEMA_VERSION) {
-      process.stderr.write(`pulse: skipping event with schema_version ${parsed.schema_version}\n`);
-      continue;
-    }
-
-    if (!parsed.timestamp || !parsed.event_type || !parsed.session_id) {
-      process.stderr.write(`pulse: skipping event missing required fields\n`);
-      continue;
-    }
-
-    const ts = new Date(parsed.timestamp);
-    if (options?.since && ts < options.since) continue;
-    if (options?.until && ts >= options.until) continue;
-    if (options?.projectKey && parsed.project_key !== options.projectKey) continue;
-    if (options?.eventType && parsed.event_type !== options.eventType) continue;
-
-    events.push(parsed as SessionEvent);
   }
 
-  events.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
   return events;
+}
+
+export function eventsFilePath(baseDir: string, source: string): string {
+  return join(baseDir, "events", `${source}-sessions.jsonl`);
 }
