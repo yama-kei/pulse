@@ -156,6 +156,28 @@ export interface MpgSessionEvent {
   persona?: string;
 }
 
+export interface TimeBucket {
+  bucket: string;
+  count: number;
+}
+
+export interface PersonaCount {
+  agent: string;
+  count: number;
+}
+
+export interface PeakBucket {
+  bucket: string;
+  max_concurrent: number;
+}
+
+export interface DurationStat {
+  project_key: string;
+  avg_ms: number;
+  median_ms: number;
+  p95_ms: number;
+}
+
 export interface ActivitySession {
   session_id: string;
   project_key: string;
@@ -178,6 +200,11 @@ export interface ActivitySummary {
   median_duration_ms: number | null;
   projects: Record<string, { sessions: number; messages: number }>;
   peak_concurrent: number;
+  sessions_per_bucket: TimeBucket[];
+  message_volume: TimeBucket[];
+  persona_breakdown: PersonaCount[];
+  peak_concurrent_series: PeakBucket[];
+  duration_stats: DurationStat[];
 }
 
 export interface BucketedSessions {
