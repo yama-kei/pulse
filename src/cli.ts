@@ -1,6 +1,7 @@
 import { runPulse, formatReport, savePulse } from "./commands/pulse.js";
 import { runActivity } from "./commands/activity.js";
 import { runHistory } from "./commands/history.js";
+import { runTrend } from "./commands/trend.js";
 import { resolve } from "node:path";
 
 const args = process.argv.slice(2);
@@ -20,6 +21,9 @@ function main(): void {
       break;
     case "history":
       handleHistory();
+      break;
+    case "trend":
+      handleTrend();
       break;
     case "help":
     case "--help":
@@ -80,6 +84,19 @@ function flagValue(argv: string[], flag: string): string | undefined {
   return argv[idx + 1];
 }
 
+function handleTrend(): void {
+  const trendArgs = args.slice(1);
+  const projectDir = resolve(
+    trendArgs.find((a) => !a.startsWith("--")) || process.cwd()
+  );
+  const opts = {
+    range: flagValue(trendArgs, "--range"),
+    json: trendArgs.includes("--json"),
+    metric: flagValue(trendArgs, "--metric"),
+  };
+  console.log(runTrend(projectDir, opts));
+}
+
 function printHelp(): void {
   console.log(`
 pulse — agent interaction quality measurement
@@ -88,6 +105,7 @@ Usage:
   pulse [run] [path]     Run a pulse on the project (default: cwd)
   pulse activity <sub>   Session activity queries (sessions, summary, gc)
   pulse history [path]   Show saved pulse report history
+  pulse trend [path]     Show metric trends over time
   pulse help             Show this help
   pulse version          Show version
 
@@ -96,9 +114,10 @@ Flags (run):
   --no-save              Don't save pulse report to .pulse/
   --no-llm               Skip LLM-powered evaluations (prompt effectiveness)
 
-Flags (history):
+Flags (history/trend):
   --range <N>d|h|m       Filter to reports within time range (e.g. 7d, 24h)
   --json                 Output as JSON array
+  --metric <name>        Trend only: convergence, prompt, rework, leverage
 
 Run "pulse activity" for activity subcommand help.
 `.trim());
