@@ -5,6 +5,7 @@ import { extractDecisionQuality } from "../extractors/decision-quality.js";
 import { extractTokenUsage } from "../extractors/token-usage.js";
 import { extractInteractionPattern } from "../extractors/interaction-pattern.js";
 import { extractPromptEffectiveness } from "../extractors/prompt-effectiveness.js";
+import { loadReports } from "./history.js";
 import { execSync } from "node:child_process";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, basename } from "node:path";
@@ -98,14 +99,37 @@ export function formatReport(report: PulseReport): string {
   // Prompt Effectiveness
   if (report.promptEffectiveness.available) {
     const pe = report.promptEffectiveness;
+    const history = loadHistoricalScores(report.cwd, report.timestamp);
     lines.push("PROMPT EFFECTIVENESS");
     lines.push(`  Overall:               ${pe.overallScore} (${pe.rating})`);
-    lines.push(`  Context provision:     ${pe.scores.contextProvision}`);
-    lines.push(`  Scope discipline:      ${pe.scores.scopeDiscipline}`);
-    lines.push(`  Feedback quality:      ${pe.scores.feedbackQuality}`);
-    lines.push(`  Decomposition:         ${pe.scores.decomposition}`);
-    lines.push(`  Verification:          ${pe.scores.verification}`);
+
+    const dims: Array<[string, keyof typeof pe.scores]> = [
+      ["Context provision", "contextProvision"],
+      ["Scope discipline", "scopeDiscipline"],
+      ["Feedback quality", "feedbackQuality"],
+      ["Decomposition", "decomposition"],
+      ["Verification", "verification"],
+    ];
+    for (const [label, key] of dims) {
+      const delta = history ? formatDelta(pe.scores[key], history.avgScores[key]) : "";
+      lines.push(`  ${label.padEnd(21)}${pe.scores[key]}${delta}`);
+    }
+
     lines.push(`  ${pe.observation}`);
+
+    if (history && history.count >= 2) {
+      lines.push("");
+      const dir = history.overallTrend > 0 ? "improving" : history.overallTrend < 0 ? "declining" : "stable";
+      lines.push(`  Trend: ${history.firstOverall.toFixed(2)} → ${pe.overallScore.toFixed(2)} over last ${history.count} sessions (${dir})`);
+    }
+
+    if (pe.coaching.length > 0) {
+      lines.push("");
+      lines.push("  Tips:");
+      for (const tip of pe.coaching) {
+        lines.push(`  → ${tip}`);
+      }
+    }
     lines.push("");
   }
 
@@ -227,4 +251,44 @@ function generateNudges(report: PulseReport): string[] {
   }
 
   return nudges;
+}
+
+export interface HistoricalScores {
+  avgScores: Record<string, number>;
+  firstOverall: number;
+  overallTrend: number;
+  count: number;
+}
+
+export function loadHistoricalScores(cwd: string, currentTimestamp: string): HistoricalScores | null {
+  try {
+    const all = loadReports(cwd);
+    const prior = all.filter(
+      (r) => r.promptEffectiveness.available && r.timestamp !== currentTimestamp
+    );
+    if (prior.length < 2) return null;
+
+    const dims = ["contextProvision", "scopeDiscipline", "feedbackQuality", "decomposition", "verification"] as const;
+    const avgScores: Record<string, number> = {};
+    for (const dim of dims) {
+      const sum = prior.reduce((s, r) => s + r.promptEffectiveness.scores[dim], 0);
+      avgScores[dim] = Math.round((sum / prior.length) * 100) / 100;
+    }
+
+    // prior is newest-first from loadReports
+    const firstOverall = prior[prior.length - 1].promptEffectiveness.overallScore;
+    const lastOverall = prior[0].promptEffectiveness.overallScore;
+    const overallTrend = lastOverall - firstOverall;
+
+    return { avgScores, firstOverall, overallTrend, count: prior.length };
+  } catch {
+    return null;
+  }
+}
+
+export function formatDelta(current: number, avg: number): string {
+  const diff = current - avg;
+  if (Math.abs(diff) < 0.01) return "";
+  const sign = diff > 0 ? "↑" : "↓";
+  return `  ${sign} ${diff > 0 ? "+" : ""}${diff.toFixed(2)} vs avg`;
 }

@@ -2,6 +2,7 @@ import {
   scoreEvents,
   rateOverall,
   extractPromptEffectiveness,
+  generateCoaching,
 } from "./prompt-effectiveness.js";
 import { PromptEvent } from "../types/pulse.js";
 import { strict as assert } from "node:assert";
@@ -97,6 +98,7 @@ describe("prompt-effectiveness scoring (stage 2)", () => {
     assert.equal(result.available, false);
     assert.deepEqual(result.events, []);
     assert.equal(result.overallScore, 0);
+    assert.deepEqual(result.coaching, []);
   });
 
   it("produces scored signal from mocked LLM response", async () => {
@@ -140,6 +142,7 @@ describe("prompt-effectiveness scoring (stage 2)", () => {
       assert.equal(result.scores.feedbackQuality, 1); // 1 actionable, 0 vague
       assert.ok(["excellent", "good", "moderate", "developing"].includes(result.rating));
       assert.ok(result.observation.includes("3 messages analyzed"));
+      assert.ok(Array.isArray(result.coaching));
 
       // Verify fetch was called with correct model and auth
       assert.equal(mockFetch.mock.callCount(), 1);
@@ -171,5 +174,61 @@ describe("prompt-effectiveness scoring (stage 2)", () => {
     } finally {
       if (originalKey !== undefined) process.env.OPENAI_API_KEY = originalKey;
     }
+  });
+});
+
+describe("generateCoaching", () => {
+  it("returns tips for weak dimensions, prioritized by lowest score", () => {
+    const scores = {
+      contextProvision: 0.2,
+      scopeDiscipline: 0.8,
+      feedbackQuality: 0.1,
+      decomposition: 0.6,
+      verification: 0.4,
+    };
+    const tips = generateCoaching(scores);
+    assert.equal(tips.length, 3);
+    // feedbackQuality (0.1) tip should be first, then contextProvision (0.2), then verification (0.4)
+    assert.ok(tips[0].includes("correcting the agent"));
+    assert.ok(tips[1].includes("relevant files"));
+    assert.ok(tips[2].includes("Review agent output"));
+  });
+
+  it("returns encouraging message when all scores >= 0.5", () => {
+    const scores = {
+      contextProvision: 0.7,
+      scopeDiscipline: 0.8,
+      feedbackQuality: 0.6,
+      decomposition: 0.5,
+      verification: 0.9,
+    };
+    const tips = generateCoaching(scores);
+    assert.equal(tips.length, 1);
+    assert.ok(tips[0].includes("keep it up"));
+  });
+
+  it("limits to 3 tips even with more weak dimensions", () => {
+    const scores = {
+      contextProvision: 0.1,
+      scopeDiscipline: 0.2,
+      feedbackQuality: 0.3,
+      decomposition: 0.1,
+      verification: 0.2,
+    };
+    const tips = generateCoaching(scores);
+    assert.equal(tips.length, 3);
+  });
+
+  it("returns single tip for one weak dimension", () => {
+    const scores = {
+      contextProvision: 0.3,
+      scopeDiscipline: 0.8,
+      feedbackQuality: 0.6,
+      decomposition: 0.7,
+      verification: 0.9,
+    };
+    const tips = generateCoaching(scores);
+    assert.equal(tips.length, 1);
+    assert.ok(tips[0].includes("relevant files"));
   });
 });

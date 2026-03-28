@@ -126,6 +126,8 @@ export interface PromptEffectivenessSignal {
   rating: "excellent" | "good" | "moderate" | "developing";
   /** 1-2 sentence observation */
   observation: string;
+  /** Actionable coaching tips based on weak dimensions */
+  coaching: string[];
 }
 
 export interface DecisionQualitySignal {
