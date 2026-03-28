@@ -157,6 +157,31 @@ function generateObservation(
   return `${totalMessages} messages analyzed — ${parts.join("; ")}.`;
 }
 
+const COACHING_TIPS: Record<keyof EffectivenessScores, string> = {
+  contextProvision:
+    "Share relevant files, error messages, or constraints upfront — agents work better with concrete context than abstract descriptions.",
+  scopeDiscipline:
+    "Define clear boundaries for each request. Instead of 'fix the app', try 'fix the login validation error in auth.ts — it should reject empty passwords'.",
+  feedbackQuality:
+    "When correcting the agent, be specific about what's wrong and what you want instead. 'Move the validation to the controller' is better than 'that's not right'.",
+  decomposition:
+    "Break complex tasks into smaller steps. Give the agent one clear objective at a time rather than a multi-part request.",
+  verification:
+    "Review agent output before accepting — check that code compiles, tests pass, and behavior matches your intent.",
+};
+
+export function generateCoaching(scores: EffectivenessScores): string[] {
+  const weak = (Object.keys(COACHING_TIPS) as (keyof EffectivenessScores)[])
+    .filter((dim) => scores[dim] < 0.5)
+    .sort((a, b) => scores[a] - scores[b]);
+
+  if (weak.length === 0) {
+    return ["Strong prompting across all dimensions — keep it up."];
+  }
+
+  return weak.slice(0, 3).map((dim) => COACHING_TIPS[dim]);
+}
+
 /**
  * Extract prompt effectiveness signal from a Claude Code session.
  * Stage 1: LLM extracts behavioral events from user messages.
@@ -179,6 +204,7 @@ export async function extractPromptEffectiveness(
     overallScore: 0,
     rating: "developing",
     observation: "Prompt effectiveness evaluation unavailable.",
+    coaching: [],
   };
 
   if (!sessionPath) return unavailable;
@@ -203,6 +229,7 @@ export async function extractPromptEffectiveness(
   const overallScore = computeOverall(scores);
   const rating = rateOverall(overallScore);
   const observation = generateObservation(scores, events, messages.length);
+  const coaching = generateCoaching(scores);
 
   return {
     available: true,
@@ -211,6 +238,7 @@ export async function extractPromptEffectiveness(
     overallScore,
     rating,
     observation,
+    coaching,
   };
 }
 
