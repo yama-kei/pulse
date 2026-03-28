@@ -1,5 +1,6 @@
 import { runPulse, formatReport, savePulse } from "./commands/pulse.js";
 import { runActivity } from "./commands/activity.js";
+import { runHistory } from "./commands/history.js";
 import { resolve } from "node:path";
 
 const args = process.argv.slice(2);
@@ -16,6 +17,9 @@ function main(): void {
       break;
     case "activity":
       console.log(runActivity(args.slice(1)));
+      break;
+    case "history":
+      console.log(runHistory(args.slice(1), resolve(args.find(a => !a.startsWith("-") && a !== "history") || process.cwd())));
       break;
     case "help":
     case "--help":
@@ -65,6 +69,7 @@ pulse — agent interaction quality measurement
 Usage:
   pulse [run] [path]     Run a pulse on the project (default: cwd)
   pulse activity <sub>   Session activity queries (sessions, summary, gc)
+  pulse history [flags]    Show report history from .pulse/
   pulse help             Show this help
   pulse version          Show version
 
@@ -72,6 +77,10 @@ Flags (run):
   --json                 Also output raw JSON
   --no-save              Don't save pulse report to .pulse/
   --no-llm               Skip LLM-powered evaluations (prompt effectiveness)
+
+Flags (history):
+  --range <duration>     Time range to include: 7d, 30d (default: all)
+  --json                 Output raw JSON
 
 Run "pulse activity" for activity subcommand help.
 `.trim());
