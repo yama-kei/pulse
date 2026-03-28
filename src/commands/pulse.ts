@@ -253,14 +253,14 @@ function generateNudges(report: PulseReport): string[] {
   return nudges;
 }
 
-interface HistoricalScores {
+export interface HistoricalScores {
   avgScores: Record<string, number>;
   firstOverall: number;
   overallTrend: number;
   count: number;
 }
 
-function loadHistoricalScores(cwd: string, currentTimestamp: string): HistoricalScores | null {
+export function loadHistoricalScores(cwd: string, currentTimestamp: string): HistoricalScores | null {
   try {
     const all = loadReports(cwd);
     const prior = all.filter(
@@ -286,7 +286,7 @@ function loadHistoricalScores(cwd: string, currentTimestamp: string): Historical
   }
 }
 
-function formatDelta(current: number, avg: number): string {
+export function formatDelta(current: number, avg: number): string {
   const diff = current - avg;
   if (Math.abs(diff) < 0.01) return "";
   const sign = diff > 0 ? "↑" : "↓";
