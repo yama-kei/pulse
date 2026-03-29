@@ -14,10 +14,20 @@ export function extractDecisionQuality(
   since?: string
 ): DecisionQualitySignal {
   const commitMessages = getRecentCommits(projectDir, since);
+  return scoreCommitMessages(commitMessages);
+}
+
+/**
+ * Score commit messages for decision quality signals.
+ * Exported for testing — called by extractDecisionQuality with git-derived messages.
+ */
+export function scoreCommitMessages(commitMessages: string[]): DecisionQualitySignal {
   const commitsTotal = commitMessages.length;
 
   const commitsWithWhy = commitMessages.filter(msg =>
-    WHY_PATTERNS.some(p => p.test(msg))
+    WHY_PATTERNS.some(p => p.test(msg)) ||
+    CONVENTIONAL_PREFIX_RE.test(msg) ||
+    ISSUE_REF_RE.test(msg)
   ).length;
 
   const commitsWithIssueRef = commitMessages.filter(msg =>
@@ -28,11 +38,12 @@ export function extractDecisionQuality(
     commitsTotal,
     commitsWithWhy,
     commitsWithIssueRef,
-    externalContextProvided: false, // determined by session analysis, not git
+    externalContextProvided: false,
     commitMessages,
   };
 }
 
+/** Explicit why-language patterns */
 const WHY_PATTERNS = [
   /\bbecause\b/i,
   /\bso that\b/i,
@@ -51,6 +62,9 @@ const WHY_PATTERNS = [
   /\bfixes\b/i,
   /\bresolves\b/i,
 ];
+
+/** Conventional commit prefixes convey intent implicitly */
+const CONVENTIONAL_PREFIX_RE = /^(feat|fix|refactor|docs|test|chore|perf|ci|build|style|revert)(\(.+?\))?:/i;
 
 const ISSUE_REF_RE = /#\d+/;
 
