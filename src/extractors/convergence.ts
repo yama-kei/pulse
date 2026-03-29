@@ -7,6 +7,12 @@ interface SessionMessage {
   message?: { role?: string; content?: unknown };
 }
 
+interface ToolUseBlock {
+  type: "tool_use";
+  name: string;
+  input: Record<string, unknown>;
+}
+
 /** Time window extracted from the session JSONL */
 export interface SessionTimeWindow {
   start: string | null;
@@ -27,15 +33,17 @@ export function extractConvergence(
 ): ConvergenceSignal {
   let exchanges = 0;
   let reworkInstances = 0;
+  let sessionOutcomes = 0;
 
   if (sessionPath) {
     const parsed = parseSessionMessages(sessionPath);
     exchanges = parsed.exchanges;
     reworkInstances = parsed.reworkInstances;
+    sessionOutcomes = parsed.outcomes;
   }
 
-  // Outcomes: at minimum, files changed in git. Floor at 1 to avoid division by zero.
-  const outcomes = Math.max(filesChanged, 1);
+  // Outcomes: max of session-derived outcomes and git filesChanged. Floor at 1 to avoid division by zero.
+  const outcomes = Math.max(sessionOutcomes, filesChanged, 1);
   const rate = exchanges > 0 ? round(exchanges / outcomes, 2) : 0;
   const reworkPercent = exchanges > 0 ? round((reworkInstances / exchanges) * 100, 1) : 0;
 
@@ -133,22 +141,38 @@ const REWORK_PATTERNS = [
   /\bno[, ]+not that\b/i,
   /\bwrong\b/i,
   /\binstead\b/i,
-  /\bactually[, ]+/i,
+  /\bactually\b/i,
   /\bdon'?t do\b/i,
   /\bstop\b/i,
   /\bgo back\b/i,
   /\bthat'?s not what/i,
+  /\bthat'?s not correct/i,
+  /\bnot what I\b/i,
   /\bretry\b/i,
+  /\btry again\b/i,
   /\bredo\b/i,
   /\broll ?back\b/i,
+  /\bwait[,.]?\s/i,
+  /\bhold on\b/i,
+  /\bnever mind\b/i,
+  /\bscratch that\b/i,
 ];
+
+const GIT_COMMIT_RE = /\bgit\s+commit\b/;
+const GH_PR_CREATE_RE = /\bgh\s+pr\s+create\b/;
+const GH_ISSUE_CREATE_RE = /\bgh\s+issue\s+create\b/;
 
 function parseSessionMessages(sessionPath: string): {
   exchanges: number;
   reworkInstances: number;
+  outcomes: number;
 } {
   let exchanges = 0;
   let reworkInstances = 0;
+  const editedFiles = new Set<string>();
+  let commits = 0;
+  let prs = 0;
+  let issues = 0;
 
   try {
     const content = readFileSync(sessionPath, "utf-8");
@@ -157,18 +181,37 @@ function parseSessionMessages(sessionPath: string): {
     for (const line of lines) {
       try {
         const msg: SessionMessage = JSON.parse(line);
-        if (msg.type !== "user") continue;
 
-        // Extract text content
-        const text = extractText(msg);
-        if (!text || text.trim().length === 0) continue;
-        if (isSystemMessage(text)) continue;
+        if (msg.type === "user") {
+          const text = extractText(msg);
+          if (!text || text.trim().length === 0) continue;
+          if (isSystemMessage(text)) continue;
 
-        exchanges++;
+          exchanges++;
 
-        // Check for rework language
-        if (REWORK_PATTERNS.some(p => p.test(text))) {
-          reworkInstances++;
+          if (REWORK_PATTERNS.some(p => p.test(text))) {
+            reworkInstances++;
+          }
+        } else if (msg.type === "assistant") {
+          // Count tool_use blocks as outcomes
+          const blocks = msg.message?.content;
+          if (!Array.isArray(blocks)) continue;
+
+          for (const block of blocks) {
+            if (block?.type !== "tool_use") continue;
+            const name: string = block.name || "";
+            const input: Record<string, unknown> = block.input || {};
+
+            if (name === "Write" || name === "Edit") {
+              const fp = input.file_path;
+              if (typeof fp === "string") editedFiles.add(fp);
+            } else if (name === "Bash") {
+              const cmd = typeof input.command === "string" ? input.command : "";
+              if (GIT_COMMIT_RE.test(cmd)) commits++;
+              if (GH_PR_CREATE_RE.test(cmd)) prs++;
+              if (GH_ISSUE_CREATE_RE.test(cmd)) issues++;
+            }
+          }
         }
       } catch {
         // skip malformed lines
@@ -178,7 +221,8 @@ function parseSessionMessages(sessionPath: string): {
     // session file unreadable
   }
 
-  return { exchanges, reworkInstances };
+  const outcomes = editedFiles.size + commits + prs + issues;
+  return { exchanges, reworkInstances, outcomes };
 }
 
 function extractText(msg: SessionMessage): string {
