@@ -37,6 +37,8 @@ export interface ConvergenceSignal {
   reworkInstances: number;
   /** reworkInstances / exchanges as percentage */
   reworkPercent: number;
+  /** Commits referencing the same issue as a prior commit (not counted as outcomes) */
+  duplicateCommits: number;
 }
 
 export interface IntentAnchoringSignal {
