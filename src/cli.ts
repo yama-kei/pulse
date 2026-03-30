@@ -2,6 +2,7 @@ import { runPulse, formatReport, savePulse } from "./commands/pulse.js";
 import { runActivity } from "./commands/activity.js";
 import { runHistory } from "./commands/history.js";
 import { runTrend } from "./commands/trend.js";
+import { runSessions } from "./commands/sessions.js";
 import { resolve } from "node:path";
 
 const args = process.argv.slice(2);
@@ -25,6 +26,9 @@ function main(): void {
     case "trend":
       handleTrend();
       break;
+    case "sessions":
+      console.log(runSessions(args.slice(1)));
+      break;
     case "help":
     case "--help":
     case "-h":
@@ -43,13 +47,30 @@ function main(): void {
 }
 
 async function run(): Promise<void> {
-  const projectDir = resolve(args[1] || process.cwd());
+  const runArgs = args.slice(1);
+  const sessionPath = flagValue(runArgs, "--session");
+  const projectDir = resolve(
+    runArgs.find((a) => !a.startsWith("--") && a !== sessionPath) ||
+      process.cwd()
+  );
+
+  if (sessionPath) {
+    const resolved = resolve(sessionPath);
+    const { existsSync } = await import("node:fs");
+    if (!existsSync(resolved)) {
+      console.error(`Session file not found: ${resolved}`);
+      process.exit(1);
+    }
+  }
 
   if (args.includes("--no-llm")) {
     delete process.env.OPENAI_API_KEY;
   }
 
-  const report = await runPulse(projectDir);
+  const report = await runPulse(
+    projectDir,
+    sessionPath ? resolve(sessionPath) : undefined
+  );
   console.log(formatReport(report));
   console.log("");
 
@@ -103,6 +124,7 @@ pulse — agent interaction quality measurement
 
 Usage:
   pulse [run] [path]     Run a pulse on the project (default: cwd)
+  pulse sessions         List sessions grouped by worktree (thread)
   pulse activity <sub>   Session activity queries (sessions, summary, gc)
   pulse history [path]   Show saved pulse report history
   pulse trend [path]     Show metric trends over time
@@ -110,9 +132,14 @@ Usage:
   pulse version          Show version
 
 Flags (run):
+  --session <path>       Analyze a specific session JSONL file
   --json                 Also output raw JSON
   --no-save              Don't save pulse report to .pulse/
   --no-llm               Skip LLM-powered evaluations (prompt effectiveness)
+
+Flags (sessions):
+  --range <N>d|h|m       Filter by time range (default: 7d)
+  --json                 Output as JSON
 
 Flags (history/trend):
   --range <N>d|h|m       Filter to reports within time range (e.g. 7d, 24h)

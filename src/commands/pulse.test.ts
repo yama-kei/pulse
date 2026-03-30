@@ -1,9 +1,9 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import * as assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { loadHistoricalScores, formatDelta } from "./pulse.js";
+import { loadHistoricalScores, formatDelta, runPulse } from "./pulse.js";
 
 const tmp = join(tmpdir(), "pulse-coaching-test-" + process.pid);
 
@@ -181,5 +181,44 @@ describe("formatDelta", () => {
   it("returns empty string for very small difference", () => {
     const result = formatDelta(0.505, 0.5);
     assert.equal(result, "");
+  });
+});
+
+describe("runPulse with --session path", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "pulse-session-flag-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("uses provided session file instead of auto-discovery", async () => {
+    const sessionFile = join(tmpDir, "test-session.jsonl");
+    writeFileSync(
+      sessionFile,
+      [
+        JSON.stringify({ type: "user", message: { role: "user", content: "add a button" } }),
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "tool_use", name: "Edit", input: { file_path: "/tmp/a.ts" } }],
+          },
+        }),
+      ].join("\n") + "\n"
+    );
+
+    const report = await runPulse(tmpDir, sessionFile);
+    assert.equal(report.convergence.exchanges, 1);
+    assert.equal(report.convergence.outcomes >= 1, true);
+  });
+
+  it("falls back to auto-discovery when no session path given", async () => {
+    // No session file will be found for tmpDir, so convergence should have 0 exchanges
+    const report = await runPulse(tmpDir);
+    assert.equal(report.convergence.exchanges, 0);
   });
 });
