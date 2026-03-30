@@ -34,12 +34,14 @@ export function extractConvergence(
   let exchanges = 0;
   let reworkInstances = 0;
   let sessionOutcomes = 0;
+  let duplicateCommits = 0;
 
   if (sessionPath) {
     const parsed = parseSessionMessages(sessionPath);
     exchanges = parsed.exchanges;
     reworkInstances = parsed.reworkInstances;
     sessionOutcomes = parsed.outcomes;
+    duplicateCommits = parsed.duplicateCommits;
   }
 
   // Outcomes: max of session-derived outcomes and git filesChanged. Floor at 1 to avoid division by zero.
@@ -47,7 +49,7 @@ export function extractConvergence(
   const rate = exchanges > 0 ? round(exchanges / outcomes, 2) : 0;
   const reworkPercent = exchanges > 0 ? round((reworkInstances / exchanges) * 100, 1) : 0;
 
-  return { exchanges, outcomes, rate, reworkInstances, reworkPercent };
+  return { exchanges, outcomes, rate, reworkInstances, reworkPercent, duplicateCommits };
 }
 
 /**
@@ -156,21 +158,39 @@ const REWORK_PATTERNS = [
   /\bhold on\b/i,
   /\bnever mind\b/i,
   /\bscratch that\b/i,
+  /\bnot\s+fixed\b/i,
+  /\bdidn'?t\s+fix/i,
+  /\bdoesn'?t\s+fix/i,
+  /\bstill\s+\w+ing\b/i,
+  /\bgot\s+worse\b/i,
+  /\bgetting\s+worse\b/i,
+  /\bdidn'?t\s+work/i,
+  /\bdoesn'?t\s+work/i,
+  /\bnot\s+working\b/i,
+  /\bsame\s+(issue|problem|error|bug)\b/i,
+  /\bno\s+(change|difference)\b/i,
 ];
 
 const GIT_COMMIT_RE = /\bgit\s+commit\b/;
 const GH_PR_CREATE_RE = /\bgh\s+pr\s+create\b/;
 const GH_ISSUE_CREATE_RE = /\bgh\s+issue\s+create\b/;
 
+/** Extract issue refs (#N) from a git commit command's -m message */
+const COMMIT_MSG_RE = /-m\s+(?:"([^"]*?)"|'([^']*?)')/;
+const ISSUE_REF_RE = /#(\d+)/g;
+
 function parseSessionMessages(sessionPath: string): {
   exchanges: number;
   reworkInstances: number;
   outcomes: number;
+  duplicateCommits: number;
 } {
   let exchanges = 0;
   let reworkInstances = 0;
   const editedFiles = new Set<string>();
   let commits = 0;
+  let duplicateCommits = 0;
+  const seenIssueRefs = new Set<string>();
   let prs = 0;
   let issues = 0;
 
@@ -207,7 +227,31 @@ function parseSessionMessages(sessionPath: string): {
               if (typeof fp === "string") editedFiles.add(fp);
             } else if (name === "Bash") {
               const cmd = typeof input.command === "string" ? input.command : "";
-              if (GIT_COMMIT_RE.test(cmd)) commits++;
+              if (GIT_COMMIT_RE.test(cmd)) {
+                // Deduplicate commits by issue ref
+                const msgMatch = cmd.match(COMMIT_MSG_RE);
+                const commitMsg = msgMatch ? (msgMatch[1] ?? msgMatch[2] ?? "") : "";
+                const refs: string[] = [];
+                let refMatch: RegExpExecArray | null;
+                const issueRe = new RegExp(ISSUE_REF_RE.source, "g");
+                while ((refMatch = issueRe.exec(commitMsg)) !== null) {
+                  refs.push(refMatch[1]);
+                }
+
+                if (refs.length > 0) {
+                  // Check if any issue ref has been seen before
+                  const allSeen = refs.every(r => seenIssueRefs.has(r));
+                  if (allSeen) {
+                    duplicateCommits++;
+                  } else {
+                    commits++;
+                    for (const r of refs) seenIssueRefs.add(r);
+                  }
+                } else {
+                  // No issue ref — count as unique outcome
+                  commits++;
+                }
+              }
               if (GH_PR_CREATE_RE.test(cmd)) prs++;
               if (GH_ISSUE_CREATE_RE.test(cmd)) issues++;
             }
@@ -222,7 +266,7 @@ function parseSessionMessages(sessionPath: string): {
   }
 
   const outcomes = editedFiles.size + commits + prs + issues;
-  return { exchanges, reworkInstances, outcomes };
+  return { exchanges, reworkInstances, outcomes, duplicateCommits };
 }
 
 function extractText(msg: SessionMessage): string {

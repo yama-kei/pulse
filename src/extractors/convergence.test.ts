@@ -213,4 +213,134 @@ describe("rework detection", () => {
     const result = extractConvergence(session, 1);
     assert.equal(result.reworkInstances, 0);
   });
+
+  it("detects 'not fixed' and 'didn't fix' as rework", () => {
+    const session = createSessionFile([
+      { type: "user", content: "Not fixed even after I restart" },
+      { type: "user", content: "that didn't fix the issue" },
+      { type: "user", content: "this doesn't fix anything" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.equal(result.reworkInstances, 3);
+  });
+
+  it("detects 'still *ing' as rework", () => {
+    const session = createSessionFile([
+      { type: "user", content: "still expanding vertically as it loads" },
+      { type: "user", content: "still failing on the same test" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.equal(result.reworkInstances, 2);
+  });
+
+  it("detects 'got worse' and 'getting worse' as rework", () => {
+    const session = createSessionFile([
+      { type: "user", content: "it got worse after that change" },
+      { type: "user", content: "the performance is getting worse" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.equal(result.reworkInstances, 2);
+  });
+
+  it("detects 'didn't work' and 'doesn't work' and 'not working' as rework", () => {
+    const session = createSessionFile([
+      { type: "user", content: "that didn't work at all" },
+      { type: "user", content: "this doesn't work either" },
+      { type: "user", content: "it's not working" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.equal(result.reworkInstances, 3);
+  });
+
+  it("detects 'same issue/problem/error/bug' as rework", () => {
+    const session = createSessionFile([
+      { type: "user", content: "same issue as before" },
+      { type: "user", content: "same problem, nothing changed" },
+      { type: "user", content: "same error in the logs" },
+      { type: "user", content: "same bug, it's back" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.equal(result.reworkInstances, 4);
+  });
+
+  it("detects 'no change' and 'no difference' as rework", () => {
+    const session = createSessionFile([
+      { type: "user", content: "no change from the last attempt" },
+      { type: "user", content: "no difference after applying the fix" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.equal(result.reworkInstances, 2);
+  });
+
+  it("does not false-positive 'still' in normal context", () => {
+    const session = createSessionFile([
+      { type: "user", content: "I still need to add the tests" },
+      { type: "user", content: "we still want this feature" },
+    ]);
+    const result = extractConvergence(session, 1);
+    // "still need" and "still want" don't match /\bstill\s+\w+ing\b/
+    assert.equal(result.reworkInstances, 0);
+  });
+});
+
+describe("duplicate commit deduplication", () => {
+  it("deduplicates commits with the same issue ref", () => {
+    const session = createRawSessionFile([
+      userMsg("fix the bug"),
+      toolUseMsg("Bash", { command: 'git commit -m "fix(#93): make bars thicker"' }),
+      toolUseMsg("Bash", { command: 'git commit -m "fix(#93): actually make bars thicker"' }),
+    ]);
+    const result = extractConvergence(session, 0);
+    assert.equal(result.outcomes, 1);
+    assert.equal(result.duplicateCommits, 1);
+  });
+
+  it("counts commits with different issue refs as separate outcomes", () => {
+    const session = createRawSessionFile([
+      userMsg("fix bugs"),
+      toolUseMsg("Bash", { command: 'git commit -m "fix(#93): bars"' }),
+      toolUseMsg("Bash", { command: 'git commit -m "fix(#94): colors"' }),
+    ]);
+    const result = extractConvergence(session, 0);
+    assert.equal(result.outcomes, 2);
+    assert.equal(result.duplicateCommits, 0);
+  });
+
+  it("counts commits without issue refs individually", () => {
+    const session = createRawSessionFile([
+      userMsg("do stuff"),
+      toolUseMsg("Bash", { command: 'git commit -m "fix something"' }),
+      toolUseMsg("Bash", { command: 'git commit -m "fix something else"' }),
+    ]);
+    const result = extractConvergence(session, 0);
+    assert.equal(result.outcomes, 2);
+    assert.equal(result.duplicateCommits, 0);
+  });
+
+  it("counts mixed ref and no-ref commits correctly", () => {
+    const session = createRawSessionFile([
+      userMsg("fix"),
+      toolUseMsg("Bash", { command: 'git commit -m "fix(#93): first"' }),
+      toolUseMsg("Bash", { command: 'git commit -m "unrelated change"' }),
+    ]);
+    const result = extractConvergence(session, 0);
+    assert.equal(result.outcomes, 2);
+    assert.equal(result.duplicateCommits, 0);
+  });
+
+  it("handles single-quoted commit messages", () => {
+    const session = createRawSessionFile([
+      userMsg("fix"),
+      toolUseMsg("Bash", { command: "git commit -m 'fix(#93): first'" }),
+      toolUseMsg("Bash", { command: "git commit -m 'fix(#93): second'" }),
+    ]);
+    const result = extractConvergence(session, 0);
+    assert.equal(result.outcomes, 1);
+    assert.equal(result.duplicateCommits, 1);
+  });
+
+  it("returns duplicateCommits 0 when no session file", () => {
+    const result = extractConvergence(null, 5);
+    assert.equal(result.duplicateCommits, 0);
+  });
 });
