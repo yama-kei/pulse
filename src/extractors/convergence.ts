@@ -1,4 +1,4 @@
-import { ConvergenceSignal } from "../types/pulse.js";
+import { ConvergenceSignal, PivotSignal } from "../types/pulse.js";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -34,12 +34,16 @@ export function extractConvergence(
   let exchanges = 0;
   let reworkInstances = 0;
   let sessionOutcomes = 0;
+  let blindRetries = 0;
+  let pivot: PivotSignal | null = null;
 
   if (sessionPath) {
     const parsed = parseSessionMessages(sessionPath);
     exchanges = parsed.exchanges;
     reworkInstances = parsed.reworkInstances;
     sessionOutcomes = parsed.outcomes;
+    blindRetries = parsed.blindRetries;
+    pivot = parsed.pivot;
   }
 
   // Outcomes: max of session-derived outcomes and git filesChanged. Floor at 1 to avoid division by zero.
@@ -47,7 +51,7 @@ export function extractConvergence(
   const rate = exchanges > 0 ? round(exchanges / outcomes, 2) : 0;
   const reworkPercent = exchanges > 0 ? round((reworkInstances / exchanges) * 100, 1) : 0;
 
-  return { exchanges, outcomes, rate, reworkInstances, reworkPercent };
+  return { exchanges, outcomes, rate, reworkInstances, reworkPercent, blindRetries, pivot };
 }
 
 /**
@@ -168,6 +172,31 @@ const REWORK_PATTERNS = [
   /\bnot working\b/i,
 ];
 
+/** Patterns indicating the user is asking a diagnostic question, not ordering a fix */
+const DIAGNOSTIC_PATTERNS = [
+  /\bwhy\b.*\?/i,
+  /\bwhat(?:'s| is) (?:causing|the (?:root cause|reason|problem|issue))/i,
+  /\bdebug\b/i,
+  /\bexplain (?:why|what)/i,
+  /\bcheck (?:the )?(?:logs?|errors?|output|console)\b/i,
+  /\blook (?:at|into) (?:the |this |what)/i,
+];
+
+/** Patterns indicating user pivoted to structured approach */
+const PIVOT_PATTERNS = [
+  /\b(?:file|create|open) (?:an? )?issue\b/i,
+  /\btrack (?:this|the|it)\b/i,
+];
+
+/** Patterns indicating user is asking for a root cause investigation (stronger pivot) */
+const ROOT_CAUSE_REQUEST_PATTERNS = [
+  /\binvestigat/i,
+  /\broot cause\b/i,
+  /\bfind (?:the |out )(?:cause|why|what)/i,
+  /\bdiagnos/i,
+  /\bwhy (?:is|does|did) (?:this|it)\b/i,
+];
+
 const GIT_COMMIT_RE = /\bgit\s+commit\b/;
 const GH_PR_CREATE_RE = /\bgh\s+pr\s+create\b/;
 const GH_ISSUE_CREATE_RE = /\bgh\s+issue\s+create\b/;
@@ -193,6 +222,8 @@ function parseSessionMessages(sessionPath: string): {
   exchanges: number;
   reworkInstances: number;
   outcomes: number;
+  blindRetries: number;
+  pivot: PivotSignal | null;
 } {
   let exchanges = 0;
   let reworkInstances = 0;
@@ -201,6 +232,12 @@ function parseSessionMessages(sessionPath: string): {
   const commitIssueRefs = new Set<string>();
   let prs = 0;
   let issues = 0;
+
+  // Track message flow for blind-retry and pivot detection
+  // Each user message is classified to analyze the sequence
+  const messageClasses: Array<"rework" | "diagnostic" | "pivot_issue" | "pivot_rootcause" | "other"> = [];
+  // Track whether agent made edits/commits between user messages
+  let agentActedSinceLastUser = false;
 
   try {
     const content = readFileSync(sessionPath, "utf-8");
@@ -217,9 +254,30 @@ function parseSessionMessages(sessionPath: string): {
 
           exchanges++;
 
-          if (REWORK_PATTERNS.some(p => p.test(text))) {
-            reworkInstances++;
+          const isRework = REWORK_PATTERNS.some(p => p.test(text));
+          if (isRework) reworkInstances++;
+
+          // Classify message for sequence analysis.
+          // Priority: issue_creation > diagnostic > root_cause_request > rework > other
+          // Diagnostic takes priority over root_cause_request because asking "why?"
+          // is an investigation step, not an escalation.
+          const isDiagnostic = DIAGNOSTIC_PATTERNS.some(p => p.test(text));
+          const isPivotIssue = PIVOT_PATTERNS.some(p => p.test(text));
+          const isPivotRootCause = ROOT_CAUSE_REQUEST_PATTERNS.some(p => p.test(text));
+
+          if (isPivotIssue) {
+            messageClasses.push("pivot_issue");
+          } else if (isDiagnostic) {
+            messageClasses.push("diagnostic");
+          } else if (isPivotRootCause) {
+            messageClasses.push("pivot_rootcause");
+          } else if (isRework) {
+            messageClasses.push("rework");
+          } else {
+            messageClasses.push("other");
           }
+
+          agentActedSinceLastUser = false;
         } else if (msg.type === "assistant") {
           // Count tool_use blocks as outcomes
           const blocks = msg.message?.content;
@@ -233,16 +291,17 @@ function parseSessionMessages(sessionPath: string): {
             if (name === "Write" || name === "Edit") {
               const fp = input.file_path;
               if (typeof fp === "string") editedFiles.add(fp);
+              agentActedSinceLastUser = true;
             } else if (name === "Bash") {
               const cmd = typeof input.command === "string" ? input.command : "";
               if (GIT_COMMIT_RE.test(cmd)) {
                 const refs = extractIssueRefs(cmd);
                 if (refs.size > 0) {
-                  // Deduplicate: commits to the same issue count as one outcome
                   for (const ref of refs) commitIssueRefs.add(ref);
                 } else {
                   commits++;
                 }
+                agentActedSinceLastUser = true;
               }
               if (GH_PR_CREATE_RE.test(cmd)) prs++;
               if (GH_ISSUE_CREATE_RE.test(cmd)) issues++;
@@ -257,10 +316,76 @@ function parseSessionMessages(sessionPath: string): {
     // session file unreadable
   }
 
-  // Commits with issue refs are deduplicated (N commits to #93 = 1 outcome).
-  // Commits without issue refs count individually.
   const outcomes = editedFiles.size + commits + commitIssueRefs.size + prs + issues;
-  return { exchanges, reworkInstances, outcomes };
+  const blindRetries = detectBlindRetries(messageClasses);
+  const pivot = detectPivot(messageClasses);
+
+  return { exchanges, reworkInstances, outcomes, blindRetries, pivot };
+}
+
+/**
+ * Detect blind-retry loops: consecutive rework messages without
+ * a diagnostic exchange in between. Each rework→rework sequence
+ * (skipping "other" messages like "commit" or "push") counts as one blind retry.
+ * Pivot messages count as rework for chain purposes — the user is still
+ * expressing that the fix didn't work, they've just also asked to escalate.
+ */
+function detectBlindRetries(classes: string[]): number {
+  let retries = 0;
+  let lastSignificant: string | null = null;
+
+  for (const cls of classes) {
+    // Skip neutral messages (commit instructions, confirmations)
+    if (cls === "other") continue;
+
+    // Pivot messages carry rework semantics (the fix failed AND user escalated)
+    const isReworkLike = cls === "rework" || cls === "pivot_issue" || cls === "pivot_rootcause";
+
+    if (isReworkLike && lastSignificant === "rework") {
+      retries++;
+    }
+
+    lastSignificant = isReworkLike ? "rework" : cls;
+  }
+  return retries;
+}
+
+/**
+ * Detect mid-session pivot: user switches from fix attempts to structured debugging.
+ * A pivot is when the session has rework/other messages before a pivot_issue or
+ * pivot_rootcause message, indicating the user gave up on blind fixing.
+ */
+function detectPivot(classes: string[]): PivotSignal | null {
+  // Count fix-like messages before any pivot
+  let fixAttempts = 0;
+  let hasRework = false;
+
+  for (let i = 0; i < classes.length; i++) {
+    const cls = classes[i];
+
+    if (cls === "rework") {
+      hasRework = true;
+      fixAttempts++;
+    } else if (cls === "other") {
+      // "other" messages that come after rework are likely fix instructions
+      if (hasRework) fixAttempts++;
+    } else if (cls === "pivot_issue" || cls === "pivot_rootcause") {
+      // Only count as a pivot if there were fix attempts before it
+      if (fixAttempts >= 2) {
+        return {
+          atExchange: i,
+          type: cls === "pivot_issue" ? "issue_creation" : "root_cause_request",
+          fixAttemptsBefore: fixAttempts,
+        };
+      }
+    } else if (cls === "diagnostic") {
+      // Diagnostic message breaks the blind-fix chain — reset
+      fixAttempts = 0;
+      hasRework = false;
+    }
+  }
+
+  return null;
 }
 
 function extractText(msg: SessionMessage): string {

@@ -37,6 +37,19 @@ export interface ConvergenceSignal {
   reworkInstances: number;
   /** reworkInstances / exchanges as percentage */
   reworkPercent: number;
+  /** Consecutive fix-fail cycles without diagnosis in between (#30 approach A) */
+  blindRetries: number;
+  /** Whether user pivoted from direct fixes to structured debugging mid-session (#30 approach B) */
+  pivot: PivotSignal | null;
+}
+
+export interface PivotSignal {
+  /** Exchange index (0-based) where the pivot occurred */
+  atExchange: number;
+  /** What the user pivoted to */
+  type: "issue_creation" | "root_cause_request";
+  /** Number of fix attempts before the pivot */
+  fixAttemptsBefore: number;
 }
 
 export interface IntentAnchoringSignal {

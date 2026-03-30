@@ -39,112 +39,60 @@ afterEach(() => {
 });
 
 describe("simulation: timeline chart blind-retry session (mpg #93)", () => {
-  /**
-   * Recreates the actual bad session pattern:
-   * 15 user messages, 6 commits all to #93, iterative fix-test-fail loop.
-   *
-   * BEFORE fix: rate=1.36, rework=13.3%, leverage=MEDIUM
-   * AFTER fix: should show high rate, high rework, clearly LOW leverage
-   */
   it("correctly scores the blind-retry session with new patterns", () => {
     const session = createRawSessionFile([
-      // Message 0: initial report
       userMsg("Timeline chart does not render. Time range is super broad regardless of the time-period switch"),
-      // Agent works, edits files, commits
       toolUseMsg("Edit", { file_path: "/tmp/dashboard-server.ts", old_string: "a", new_string: "b" }),
       toolUseMsg("Bash", { command: 'git commit -m "fix(#93): improve timeline chart visibility with thicker bars"' }),
-
-      // Message 1: partial progress but not good enough
       userMsg("ok, timeline is now rendering, but it's kind of hard to see because line is very thin"),
       toolUseMsg("Edit", { file_path: "/tmp/dashboard-server.ts", old_string: "b", new_string: "c" }),
       toolUseMsg("Bash", { command: 'git commit -m "fix(#93): collapse timeline segments into single line"' }),
-
-      // Message 2: commit instruction (not rework)
       userMsg("good. commit this change locally"),
-
-      // Message 3: push instruction (not rework)
       userMsg("did you push to master?"),
-
-      // Message 4: confirm (not rework)
       userMsg("yes, push to master (no PR)"),
       toolUseMsg("Bash", { command: 'git push origin master' }),
-
-      // Message 5: more refinement requests
       userMsg("can we make the bar a single straight line for each session so timeline does not consume vertical space"),
       toolUseMsg("Edit", { file_path: "/tmp/dashboard-server.ts", old_string: "c", new_string: "d" }),
       toolUseMsg("Bash", { command: 'git commit -m "fix(#93): make timeline bars thicker"' }),
-
-      // Message 6: more tweaks
       userMsg("make the line thicker, assuming that it won't largely impact the vertical space"),
       toolUseMsg("Edit", { file_path: "/tmp/dashboard-server.ts", old_string: "d", new_string: "e" }),
-
-      // Message 7: commit (not rework)
       userMsg("commit to local master branch"),
       toolUseMsg("Bash", { command: 'git commit -m "fix(#93): fix timeline rendering"' }),
-
-      // Message 8: REWORK - still expanding (blind-retry pattern)
+      // REWORK: still expands
       userMsg("when timeline graph is being rendered, it still expands vertically as it loads more data"),
       toolUseMsg("Edit", { file_path: "/tmp/dashboard-server.ts", old_string: "e", new_string: "f" }),
       toolUseMsg("Bash", { command: 'git commit -m "fix(#93): rewrite timeline with custom canvas plugin"' }),
-
-      // Message 9: commit+push (not rework)
       userMsg("commit and push"),
-
-      // Message 10: REWORK - not fixed
+      // REWORK: not fixed
       userMsg("Not fixed even after I restart with latest changes. Can you go and check the website?"),
-
-      // Message 11: checking (not rework)
       userMsg("is code pushed to master?"),
-
-      // Message 12: REWORK - still expanding
+      // REWORK: still expanding
       userMsg("OK, now I see green/grey display but the issue of graph automatically expands vertically as the page loads"),
       toolUseMsg("Edit", { file_path: "/tmp/dashboard-server.ts", old_string: "f", new_string: "g" }),
       toolUseMsg("Bash", { command: 'git commit -m "fix(#93): filter idle-only sessions and fix vertical expansion"' }),
-
-      // Message 13: REWORK - got worse, pivot to diagnosis
+      // REWORK + PIVOT: got worse, asks to investigate and file issue
       userMsg("No, it got worse...graphs are expanding even faster. Please investigate the cause and file an issue"),
       toolUseMsg("Bash", { command: 'gh issue create --title "Timeline chart vertical expansion" --body "root cause"' }),
-
-      // Message 14: final instruction
       userMsg("commit and push what you have"),
     ]);
 
     const result = extractConvergence(session, 0);
 
-    // Exchanges: 15 user messages
     assert.equal(result.exchanges, 15);
-
-    // Rework: should catch "still expands", "Not fixed", "still expanding"(?), "got worse"
-    // Message 8: "still expands" -> matches /\bstill expands?\b/
-    // Message 10: "Not fixed" -> matches /\bnot fixed\b/
-    // Message 12: "expands vertically" - doesn't match directly but has expansion language
-    // Message 13: "got worse" -> matches /\bgot worse\b/
     assert.ok(result.reworkInstances >= 3, `Expected >=3 rework, got ${result.reworkInstances}`);
-
-    // Outcomes: 6 commits all to #93 should deduplicate to 1, plus 1 issue create
-    // editedFiles: 1 unique file (/tmp/dashboard-server.ts)
-    // commits with #93 refs: 6 -> deduplicated to 1
-    // issues: 1
-    // Total: 1 file + 1 issue ref + 1 issue create = 3
-    assert.equal(result.outcomes, 3, `Expected 3 outcomes (1 file + 1 deduped issue + 1 gh issue), got ${result.outcomes}`);
-
-    // Rate: 15 / 3 = 5.0 (high) — correctly identifies the problem
+    assert.equal(result.outcomes, 3);
     assert.equal(result.rate, 5);
-
-    // Rework %: should be well above the 15% nudge threshold
     assert.ok(result.reworkPercent >= 20, `Expected >=20% rework, got ${result.reworkPercent}`);
+
+    // Blind retries: consecutive rework without diagnosis
+    assert.ok(result.blindRetries >= 2, `Expected >=2 blind retries, got ${result.blindRetries}`);
+
+    // Pivot: user asked to "investigate the cause and file an issue"
+    assert.ok(result.pivot !== null, "Expected pivot to be detected");
+    assert.ok(result.pivot!.fixAttemptsBefore >= 2, `Expected >=2 fix attempts before pivot, got ${result.pivot!.fixAttemptsBefore}`);
   });
 
-  it("compares: same session WITHOUT new patterns would look artificially good", () => {
-    // Simulate the OLD behavior: no dedup, old rework patterns only
-    // 6 commits counted as 6, only "actually"/"try again" style rework caught
-    // This test documents what the old code would have produced:
-    // - outcomes: 1 file + 6 commits + 1 issue = 8 (before: 11 with filesChanged)
-    // - rework: only ~2 messages caught
-    // - rate: 15/8 = 1.88 or 15/11 = 1.36
-
-    // With our fix: outcomes=3, rate=5.0, rework>=3
-    // This is a dramatic improvement in detection accuracy
+  it("compact blind-retry: 3 fix-fail cycles then pivot", () => {
     const session = createRawSessionFile([
       userMsg("fix the rendering"),
       toolUseMsg("Edit", { file_path: "/tmp/chart.ts", old_string: "a", new_string: "b" }),
@@ -161,20 +109,145 @@ describe("simulation: timeline chart blind-retry session (mpg #93)", () => {
 
     const result = extractConvergence(session, 0);
 
-    // 4 exchanges
     assert.equal(result.exchanges, 4);
-
-    // All 3 correction messages should be caught:
-    // "not fixed" + "still shows" -> matches
-    // "doesn't work" + "no change" -> matches
-    // "got worse" -> matches
     assert.equal(result.reworkInstances, 3);
     assert.equal(result.reworkPercent, 75);
-
-    // Outcomes: 1 file + 1 deduped #93 + 1 issue = 3
     assert.equal(result.outcomes, 3);
 
-    // Rate: 4/3 = 1.33
-    assert.equal(result.rate, 1.33);
+    // 3 consecutive rework messages: "not fixed" -> "doesn't work" -> "got worse"
+    // That's 2 blind retries (rework→rework transitions)
+    assert.equal(result.blindRetries, 2);
+
+    // Pivot detected at "investigate the root cause and file an issue"
+    assert.ok(result.pivot !== null, "Expected pivot");
+    assert.equal(result.pivot!.type, "issue_creation");
+    assert.ok(result.pivot!.fixAttemptsBefore >= 2);
+  });
+});
+
+describe("blind-retry detection", () => {
+  it("returns 0 for a clean session with no rework", () => {
+    const session = createRawSessionFile([
+      userMsg("add a login form"),
+      toolUseMsg("Edit", { file_path: "/tmp/a.ts", old_string: "a", new_string: "b" }),
+      userMsg("now add validation"),
+      toolUseMsg("Edit", { file_path: "/tmp/a.ts", old_string: "b", new_string: "c" }),
+      userMsg("looks good, commit"),
+      toolUseMsg("Bash", { command: 'git commit -m "feat: add login form"' }),
+    ]);
+    const result = extractConvergence(session, 0);
+    assert.equal(result.blindRetries, 0);
+  });
+
+  it("returns 0 when rework is followed by diagnosis, not more rework", () => {
+    const session = createRawSessionFile([
+      userMsg("fix the chart"),
+      toolUseMsg("Edit", { file_path: "/tmp/a.ts", old_string: "a", new_string: "b" }),
+      userMsg("not fixed"),
+      // User asks for diagnosis instead of another blind fix
+      userMsg("why is this happening? check the console logs"),
+      toolUseMsg("Edit", { file_path: "/tmp/a.ts", old_string: "b", new_string: "c" }),
+    ]);
+    const result = extractConvergence(session, 0);
+    assert.equal(result.blindRetries, 0);
+  });
+
+  it("counts consecutive rework without diagnosis as blind retries", () => {
+    const session = createRawSessionFile([
+      userMsg("fix the bug"),
+      toolUseMsg("Edit", { file_path: "/tmp/a.ts", old_string: "a", new_string: "b" }),
+      userMsg("still broken"),
+      toolUseMsg("Edit", { file_path: "/tmp/a.ts", old_string: "b", new_string: "c" }),
+      userMsg("still not working"),
+      toolUseMsg("Edit", { file_path: "/tmp/a.ts", old_string: "c", new_string: "d" }),
+      userMsg("same issue, no change"),
+    ]);
+    const result = extractConvergence(session, 0);
+    // rework→rework→rework = 2 blind retries
+    assert.equal(result.blindRetries, 2);
+  });
+
+  it("resets count when diagnostic message interrupts the chain", () => {
+    const session = createRawSessionFile([
+      userMsg("fix the bug"),
+      toolUseMsg("Edit", { file_path: "/tmp/a.ts", old_string: "a", new_string: "b" }),
+      userMsg("still broken"),
+      // Diagnostic interruption
+      userMsg("explain why this is failing"),
+      toolUseMsg("Edit", { file_path: "/tmp/a.ts", old_string: "b", new_string: "c" }),
+      userMsg("still not working"),
+    ]);
+    const result = extractConvergence(session, 0);
+    // "still broken" → diagnostic → "still not working": chain broken by diagnosis
+    // No consecutive rework→rework after skipping "other" messages
+    assert.equal(result.blindRetries, 0);
+  });
+});
+
+describe("pivot detection", () => {
+  it("returns null for clean sessions without pivots", () => {
+    const session = createRawSessionFile([
+      userMsg("add a feature"),
+      toolUseMsg("Edit", { file_path: "/tmp/a.ts", old_string: "a", new_string: "b" }),
+      userMsg("commit and push"),
+      toolUseMsg("Bash", { command: 'git commit -m "feat: something"' }),
+    ]);
+    const result = extractConvergence(session, 0);
+    assert.equal(result.pivot, null);
+  });
+
+  it("returns null if issue creation happens without prior rework", () => {
+    const session = createRawSessionFile([
+      userMsg("create an issue for the new feature"),
+      toolUseMsg("Bash", { command: 'gh issue create --title "new feature"' }),
+    ]);
+    const result = extractConvergence(session, 0);
+    // No rework before the issue creation — this is proactive, not a pivot
+    assert.equal(result.pivot, null);
+  });
+
+  it("detects pivot to issue creation after rework", () => {
+    const session = createRawSessionFile([
+      userMsg("fix the bug"),
+      toolUseMsg("Edit", { file_path: "/tmp/a.ts", old_string: "a", new_string: "b" }),
+      userMsg("not fixed"),
+      toolUseMsg("Edit", { file_path: "/tmp/a.ts", old_string: "b", new_string: "c" }),
+      userMsg("still broken"),
+      userMsg("file an issue to track this"),
+    ]);
+    const result = extractConvergence(session, 0);
+    assert.ok(result.pivot !== null, "Expected pivot");
+    assert.equal(result.pivot!.type, "issue_creation");
+    assert.ok(result.pivot!.fixAttemptsBefore >= 2);
+  });
+
+  it("detects pivot to root cause request after rework", () => {
+    const session = createRawSessionFile([
+      userMsg("fix the chart rendering"),
+      toolUseMsg("Edit", { file_path: "/tmp/a.ts", old_string: "a", new_string: "b" }),
+      userMsg("not working"),
+      toolUseMsg("Edit", { file_path: "/tmp/a.ts", old_string: "b", new_string: "c" }),
+      userMsg("same problem"),
+      userMsg("investigate the root cause before trying another fix"),
+    ]);
+    const result = extractConvergence(session, 0);
+    assert.ok(result.pivot !== null, "Expected pivot");
+    assert.equal(result.pivot!.type, "root_cause_request");
+    assert.ok(result.pivot!.fixAttemptsBefore >= 2);
+  });
+
+  it("does not detect pivot if diagnostic resets the chain", () => {
+    const session = createRawSessionFile([
+      userMsg("fix the bug"),
+      toolUseMsg("Edit", { file_path: "/tmp/a.ts", old_string: "a", new_string: "b" }),
+      userMsg("not fixed"),
+      // Diagnostic resets the chain
+      userMsg("why is this happening? check the error logs"),
+      // Now a new fix attempt after understanding
+      userMsg("ok I see, create an issue for the deeper fix"),
+    ]);
+    const result = extractConvergence(session, 0);
+    // Only 1 fix attempt after diagnostic reset — below threshold of 2
+    assert.equal(result.pivot, null);
   });
 });

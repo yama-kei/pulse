@@ -52,6 +52,13 @@ export function formatReport(report: PulseReport): string {
   lines.push("CONVERGENCE");
   lines.push(`  Exchanges to outcome:  ${c.rate} (${rateLabel(c.rate)})`);
   lines.push(`  Rework instances:      ${c.reworkInstances} (${c.reworkPercent}%)`);
+  if (c.blindRetries > 0) {
+    lines.push(`  Blind retries:         ${c.blindRetries}`);
+  }
+  if (c.pivot) {
+    const pivotLabel = c.pivot.type === "issue_creation" ? "issue creation" : "root cause investigation";
+    lines.push(`  Pivot detected:        → ${pivotLabel} at exchange ${c.pivot.atExchange + 1} (after ${c.pivot.fixAttemptsBefore} fix attempts)`);
+  }
   lines.push("");
 
   // Intent Anchoring
@@ -189,12 +196,12 @@ function computeLeverage(
   convergence: PulseReport["convergence"],
   decisionQuality: PulseReport["decisionQuality"]
 ): "HIGH" | "MEDIUM" | "LOW" {
-  const { rate, reworkPercent } = convergence;
+  const { rate, reworkPercent, blindRetries } = convergence;
 
-  // HIGH: <=1 exchange per outcome, <10% rework
-  if (rate <= 1 && reworkPercent < 10) return "HIGH";
-  // LOW: >4 exchanges per outcome or >15% rework
-  if (rate > 4 || reworkPercent > 15) return "LOW";
+  // HIGH: <=1 exchange per outcome, <10% rework, no blind retries
+  if (rate <= 1 && reworkPercent < 10 && blindRetries === 0) return "HIGH";
+  // LOW: >4 exchanges per outcome or >15% rework or >=2 blind retries
+  if (rate > 4 || reworkPercent > 15 || blindRetries >= 2) return "LOW";
   return "MEDIUM";
 }
 
@@ -231,6 +238,15 @@ function generateNudges(report: PulseReport): string[] {
 
   if (c.rate > 4) {
     nudges.push(`${c.rate} exchanges per outcome is high. Pre-loading decisions (in issues, specs, or CLAUDE.md) can improve convergence.`);
+  }
+
+  if (c.blindRetries >= 2) {
+    nudges.push(`${c.blindRetries} blind retries detected — consecutive fix attempts without diagnosing the root cause. Ask "why is this happening?" before requesting another fix.`);
+  }
+
+  if (c.pivot) {
+    const pivotLabel = c.pivot.type === "issue_creation" ? "creating an issue" : "requesting root cause analysis";
+    nudges.push(`Session pivoted to ${pivotLabel} after ${c.pivot.fixAttemptsBefore} fix attempts. Starting with diagnosis next time can save ${c.pivot.fixAttemptsBefore - 1} iterations.`);
   }
 
   if (tu.available && tu.tokensPerExchange > 50000) {
