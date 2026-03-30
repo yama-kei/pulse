@@ -6,7 +6,9 @@ import { runSessions } from "./commands/sessions.js";
 import { resolve } from "node:path";
 
 const args = process.argv.slice(2);
-const command = args[0] || "run";
+// Treat leading flags (--session, --json, etc.) as implicit "run" command
+const isImplicitRun = args[0]?.startsWith("--") && !["--help", "-h", "--version", "-v"].includes(args[0]);
+const command = isImplicitRun ? "run" : (args[0] || "run");
 
 function main(): void {
   switch (command) {
@@ -47,7 +49,7 @@ function main(): void {
 }
 
 async function run(): Promise<void> {
-  const runArgs = args.slice(1);
+  const runArgs = isImplicitRun ? args : args.slice(1);
   const sessionPath = flagValue(runArgs, "--session");
   const projectDir = resolve(
     runArgs.find((a) => !a.startsWith("--") && a !== sessionPath) ||
