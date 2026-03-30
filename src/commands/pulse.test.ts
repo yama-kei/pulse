@@ -3,7 +3,7 @@ import * as assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { loadHistoricalScores, formatDelta, runPulse } from "./pulse.js";
+import { loadHistoricalScores, formatDelta, runPulse, computeLeverage } from "./pulse.js";
 
 const tmp = join(tmpdir(), "pulse-coaching-test-" + process.pid);
 
@@ -27,9 +27,59 @@ function makeReport(overrides: Record<string, unknown> = {}): Record<string, unk
       coaching: [],
     },
     interactionLeverage: "MEDIUM",
+    leverageScore: 0.55,
     ...overrides,
   };
 }
+
+describe("computeLeverage", () => {
+  it("returns HIGH score for perfect session", () => {
+    const convergence = { exchanges: 3, outcomes: 3, rate: 1.0, reworkInstances: 0, reworkPercent: 0, duplicateCommits: 0 };
+    const dq = { commitsTotal: 3, commitsWithWhy: 3, commitsWithIssueRef: 3, externalContextProvided: false, commitMessages: [] };
+    const { score, label } = computeLeverage(convergence, dq);
+    assert.ok(score >= 0.7, `expected HIGH, got score ${score}`);
+    assert.equal(label, "HIGH");
+  });
+
+  it("returns LOW score for poor session", () => {
+    const convergence = { exchanges: 20, outcomes: 2, rate: 10.0, reworkInstances: 5, reworkPercent: 25, duplicateCommits: 0 };
+    const dq = { commitsTotal: 2, commitsWithWhy: 0, commitsWithIssueRef: 0, externalContextProvided: false, commitMessages: [] };
+    const { score, label } = computeLeverage(convergence, dq);
+    assert.ok(score < 0.4, `expected LOW, got score ${score}`);
+    assert.equal(label, "LOW");
+  });
+
+  it("returns MEDIUM score for average session", () => {
+    const convergence = { exchanges: 6, outcomes: 3, rate: 2.0, reworkInstances: 1, reworkPercent: 10, duplicateCommits: 0 };
+    const dq = { commitsTotal: 3, commitsWithWhy: 2, commitsWithIssueRef: 1, externalContextProvided: false, commitMessages: [] };
+    const { score, label } = computeLeverage(convergence, dq);
+    assert.ok(score >= 0.4 && score < 0.7, `expected MEDIUM, got score ${score}`);
+    assert.equal(label, "MEDIUM");
+  });
+
+  it("score is always between 0 and 1", () => {
+    // Edge case: extreme values
+    const convergence = { exchanges: 100, outcomes: 1, rate: 100, reworkInstances: 100, reworkPercent: 100, duplicateCommits: 0 };
+    const dq = { commitsTotal: 0, commitsWithWhy: 0, commitsWithIssueRef: 0, externalContextProvided: false, commitMessages: [] };
+    const { score } = computeLeverage(convergence, dq);
+    assert.ok(score >= 0, `score should be >= 0, got ${score}`);
+    assert.ok(score <= 1, `score should be <= 1, got ${score}`);
+  });
+
+  it("handles zero commits gracefully", () => {
+    const convergence = { exchanges: 3, outcomes: 1, rate: 3.0, reworkInstances: 0, reworkPercent: 0, duplicateCommits: 0 };
+    const dq = { commitsTotal: 0, commitsWithWhy: 0, commitsWithIssueRef: 0, externalContextProvided: false, commitMessages: [] };
+    const { score } = computeLeverage(convergence, dq);
+    assert.ok(score >= 0 && score <= 1);
+  });
+
+  it("handles zero rate (no exchanges or perfect ratio)", () => {
+    const convergence = { exchanges: 0, outcomes: 0, rate: 0, reworkInstances: 0, reworkPercent: 0, duplicateCommits: 0 };
+    const dq = { commitsTotal: 5, commitsWithWhy: 5, commitsWithIssueRef: 5, externalContextProvided: false, commitMessages: [] };
+    const { score } = computeLeverage(convergence, dq);
+    assert.ok(score >= 0.7, `expected HIGH for perfect outcome quality + zero rate, got ${score}`);
+  });
+});
 
 describe("loadHistoricalScores", () => {
   beforeEach(() => mkdirSync(join(tmp, ".pulse"), { recursive: true }));

@@ -21,7 +21,7 @@ export async function runPulse(projectDir: string, sessionPath?: string): Promis
   const tokenUsage = extractTokenUsage(sessionFile, convergence.exchanges, convergence.outcomes);
   const interactionPattern = extractInteractionPattern(sessionFile);
   const promptEffectiveness = await extractPromptEffectiveness(sessionFile);
-  const interactionLeverage = computeLeverage(convergence, decisionQuality);
+  const { score: leverageScore, label: interactionLeverage } = computeLeverage(convergence, decisionQuality);
 
   return {
     timestamp: new Date().toISOString(),
@@ -34,6 +34,7 @@ export async function runPulse(projectDir: string, sessionPath?: string): Promis
     interactionPattern,
     promptEffectiveness,
     interactionLeverage,
+    leverageScore,
   };
 }
 
@@ -135,7 +136,7 @@ export function formatReport(report: PulseReport): string {
 
   // Summary
   lines.push(hr);
-  lines.push(`Interaction Leverage:    ${report.interactionLeverage}`);
+  lines.push(`Interaction Leverage:    ${report.leverageScore.toFixed(2)} (${report.interactionLeverage})`);
   lines.push(hr);
 
   // Actionable nudges
@@ -185,17 +186,32 @@ function countFilesChanged(projectDir: string, timeWindow: SessionTimeWindow): n
   }
 }
 
-function computeLeverage(
+export function computeLeverage(
   convergence: PulseReport["convergence"],
   decisionQuality: PulseReport["decisionQuality"]
-): "HIGH" | "MEDIUM" | "LOW" {
+): { score: number; label: "HIGH" | "MEDIUM" | "LOW" } {
   const { rate, reworkPercent } = convergence;
+  const { commitsTotal, commitsWithWhy, commitsWithIssueRef } = decisionQuality;
 
-  // HIGH: <=1 exchange per outcome, <10% rework
-  if (rate <= 1 && reworkPercent < 10) return "HIGH";
-  // LOW: >4 exchanges per outcome or >15% rework
-  if (rate > 4 || reworkPercent > 15) return "LOW";
-  return "MEDIUM";
+  // Outcome Quality: commit message quality (why + issue refs)
+  const outcomeQuality = commitsTotal > 0
+    ? (commitsWithWhy / commitsTotal) * 0.5 + (commitsWithIssueRef / commitsTotal) * 0.5
+    : 0;
+
+  // Efficiency: inverse of convergence rate (lower rate = higher efficiency)
+  const efficiency = 1 / (1 + rate);
+
+  // Stability: inverse of rework percentage
+  const stability = 1 - (reworkPercent / 100);
+
+  // Equal weight blend, clamped to [0, 1]
+  const raw = (outcomeQuality + efficiency + stability) / 3;
+  const score = Math.round(Math.max(0, Math.min(1, raw)) * 100) / 100;
+
+  // Derive label from score thresholds
+  const label: "HIGH" | "MEDIUM" | "LOW" = score >= 0.7 ? "HIGH" : score >= 0.4 ? "MEDIUM" : "LOW";
+
+  return { score, label };
 }
 
 function rateLabel(rate: number): string {

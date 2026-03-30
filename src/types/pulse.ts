@@ -9,6 +9,7 @@ export interface PulseReport {
   interactionPattern: InteractionPatternSignal;
   promptEffectiveness: PromptEffectivenessSignal;
   interactionLeverage: "HIGH" | "MEDIUM" | "LOW";
+  leverageScore: number;
 }
 
 export interface TokenUsageSignal {
