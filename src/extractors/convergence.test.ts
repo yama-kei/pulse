@@ -213,4 +213,118 @@ describe("rework detection", () => {
     const result = extractConvergence(session, 1);
     assert.equal(result.reworkInstances, 0);
   });
+
+  it("detects blind-retry patterns: 'not fixed', 'didn't work', 'still broken'", () => {
+    const session = createSessionFile([
+      { type: "user", content: "Not fixed even after I restart with latest changes" },
+      { type: "user", content: "that didn't work, the chart is still broken" },
+      { type: "user", content: "doesn't work, same issue" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.equal(result.reworkInstances, 3);
+  });
+
+  it("detects 'got worse' and 'getting worse' as rework", () => {
+    const session = createSessionFile([
+      { type: "user", content: "No, it got worse...graphs are expanding even faster" },
+      { type: "user", content: "it's getting worse with each change" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.equal(result.reworkInstances, 2);
+  });
+
+  it("detects 'still expanding', 'still happening' as rework", () => {
+    const session = createSessionFile([
+      { type: "user", content: "it still expands vertically as it loads more data" },
+      { type: "user", content: "the error is still happening after the fix" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.equal(result.reworkInstances, 2);
+  });
+
+  it("detects 'no change', 'no difference', 'no improvement' as rework", () => {
+    const session = createSessionFile([
+      { type: "user", content: "no change after deploying your fix" },
+      { type: "user", content: "I see no difference" },
+      { type: "user", content: "no improvement at all" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.equal(result.reworkInstances, 3);
+  });
+
+  it("detects 'not working' as rework", () => {
+    const session = createSessionFile([
+      { type: "user", content: "the timeline is not working correctly" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.equal(result.reworkInstances, 1);
+  });
+
+  it("does not false-positive 'still' in normal context", () => {
+    const session = createSessionFile([
+      { type: "user", content: "I still want to add the login feature" },
+      { type: "user", content: "we still need to handle edge cases" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.equal(result.reworkInstances, 0);
+  });
+});
+
+describe("outcome deduplication", () => {
+  it("deduplicates commits referencing the same issue number", () => {
+    const session = createRawSessionFile([
+      userMsg("fix the timeline"),
+      toolUseMsg("Bash", { command: 'git commit -m "fix(#93): make bars thicker"' }),
+      toolUseMsg("Bash", { command: 'git commit -m "fix(#93): collapse segments"' }),
+      toolUseMsg("Bash", { command: 'git commit -m "fix(#93): rewrite with canvas plugin"' }),
+    ]);
+    const result = extractConvergence(session, 0);
+    // 3 commits to #93 = 1 outcome, not 3
+    assert.equal(result.outcomes, 1);
+  });
+
+  it("counts commits to different issues as separate outcomes", () => {
+    const session = createRawSessionFile([
+      userMsg("fix both issues"),
+      toolUseMsg("Bash", { command: 'git commit -m "fix(#93): timeline bars"' }),
+      toolUseMsg("Bash", { command: 'git commit -m "fix(#94): session ID column"' }),
+    ]);
+    const result = extractConvergence(session, 0);
+    assert.equal(result.outcomes, 2);
+  });
+
+  it("counts commits without issue refs individually", () => {
+    const session = createRawSessionFile([
+      userMsg("make some changes"),
+      toolUseMsg("Bash", { command: 'git commit -m "chore: cleanup"' }),
+      toolUseMsg("Bash", { command: 'git commit -m "docs: update readme"' }),
+    ]);
+    const result = extractConvergence(session, 0);
+    assert.equal(result.outcomes, 2);
+  });
+
+  it("mixes issue-ref dedup with non-ref commits correctly", () => {
+    const session = createRawSessionFile([
+      userMsg("fix and cleanup"),
+      toolUseMsg("Bash", { command: 'git commit -m "fix(#93): attempt 1"' }),
+      toolUseMsg("Bash", { command: 'git commit -m "fix(#93): attempt 2"' }),
+      toolUseMsg("Bash", { command: 'git commit -m "chore: unrelated cleanup"' }),
+    ]);
+    const result = extractConvergence(session, 0);
+    // 1 (deduped #93) + 1 (no-ref commit) = 2
+    assert.equal(result.outcomes, 2);
+  });
+
+  it("still combines with file edits and PRs", () => {
+    const session = createRawSessionFile([
+      userMsg("fix and ship"),
+      toolUseMsg("Edit", { file_path: "/tmp/a.ts", old_string: "x", new_string: "y" }),
+      toolUseMsg("Bash", { command: 'git commit -m "fix(#93): attempt 1"' }),
+      toolUseMsg("Bash", { command: 'git commit -m "fix(#93): attempt 2"' }),
+      toolUseMsg("Bash", { command: 'gh pr create --title "fix"' }),
+    ]);
+    const result = extractConvergence(session, 0);
+    // 1 file + 1 deduped issue + 1 PR = 3
+    assert.equal(result.outcomes, 3);
+  });
 });

@@ -156,11 +156,38 @@ const REWORK_PATTERNS = [
   /\bhold on\b/i,
   /\bnever mind\b/i,
   /\bscratch that\b/i,
+  // Blind-retry patterns: user reports fix didn't work (#30)
+  /\bnot fixed\b/i,
+  /\bdidn'?t (?:fix|work|help|change)\b/i,
+  /\bdoesn'?t (?:work|help|fix)\b/i,
+  /\bstill (?:broken|failing|happening|the same|not working|not fixed|expands?|shows?)\b/i,
+  /\bgot worse\b/i,
+  /\bgetting worse\b/i,
+  /\bsame (?:issue|problem|error|bug)\b/i,
+  /\bno (?:change|difference|improvement|effect)\b/i,
+  /\bnot working\b/i,
 ];
 
 const GIT_COMMIT_RE = /\bgit\s+commit\b/;
 const GH_PR_CREATE_RE = /\bgh\s+pr\s+create\b/;
 const GH_ISSUE_CREATE_RE = /\bgh\s+issue\s+create\b/;
+const ISSUE_REF_RE = /#(\d+)/g;
+
+/**
+ * Extract issue references from a git commit command's message flag.
+ * Returns set of issue numbers like {"93", "42"}.
+ */
+function extractIssueRefs(commitCmd: string): Set<string> {
+  const refs = new Set<string>();
+  // Match -m "..." or -m '...' content
+  const msgMatch = commitCmd.match(/-m\s+["']([^"']+)["']/);
+  if (msgMatch) {
+    for (const m of msgMatch[1].matchAll(ISSUE_REF_RE)) {
+      refs.add(m[1]);
+    }
+  }
+  return refs;
+}
 
 function parseSessionMessages(sessionPath: string): {
   exchanges: number;
@@ -171,6 +198,7 @@ function parseSessionMessages(sessionPath: string): {
   let reworkInstances = 0;
   const editedFiles = new Set<string>();
   let commits = 0;
+  const commitIssueRefs = new Set<string>();
   let prs = 0;
   let issues = 0;
 
@@ -207,7 +235,15 @@ function parseSessionMessages(sessionPath: string): {
               if (typeof fp === "string") editedFiles.add(fp);
             } else if (name === "Bash") {
               const cmd = typeof input.command === "string" ? input.command : "";
-              if (GIT_COMMIT_RE.test(cmd)) commits++;
+              if (GIT_COMMIT_RE.test(cmd)) {
+                const refs = extractIssueRefs(cmd);
+                if (refs.size > 0) {
+                  // Deduplicate: commits to the same issue count as one outcome
+                  for (const ref of refs) commitIssueRefs.add(ref);
+                } else {
+                  commits++;
+                }
+              }
               if (GH_PR_CREATE_RE.test(cmd)) prs++;
               if (GH_ISSUE_CREATE_RE.test(cmd)) issues++;
             }
@@ -221,7 +257,9 @@ function parseSessionMessages(sessionPath: string): {
     // session file unreadable
   }
 
-  const outcomes = editedFiles.size + commits + prs + issues;
+  // Commits with issue refs are deduplicated (N commits to #93 = 1 outcome).
+  // Commits without issue refs count individually.
+  const outcomes = editedFiles.size + commits + commitIssueRefs.size + prs + issues;
   return { exchanges, reworkInstances, outcomes };
 }
 
