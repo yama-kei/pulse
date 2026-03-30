@@ -43,13 +43,30 @@ function main(): void {
 }
 
 async function run(): Promise<void> {
-  const projectDir = resolve(args[1] || process.cwd());
+  const runArgs = args.slice(1);
+  const sessionPath = flagValue(runArgs, "--session");
+  const projectDir = resolve(
+    runArgs.find((a) => !a.startsWith("--") && a !== sessionPath) ||
+      process.cwd()
+  );
+
+  if (sessionPath) {
+    const resolved = resolve(sessionPath);
+    const { existsSync } = await import("node:fs");
+    if (!existsSync(resolved)) {
+      console.error(`Session file not found: ${resolved}`);
+      process.exit(1);
+    }
+  }
 
   if (args.includes("--no-llm")) {
     delete process.env.OPENAI_API_KEY;
   }
 
-  const report = await runPulse(projectDir);
+  const report = await runPulse(
+    projectDir,
+    sessionPath ? resolve(sessionPath) : undefined
+  );
   console.log(formatReport(report));
   console.log("");
 
@@ -110,6 +127,7 @@ Usage:
   pulse version          Show version
 
 Flags (run):
+  --session <path>       Analyze a specific session JSONL file
   --json                 Also output raw JSON
   --no-save              Don't save pulse report to .pulse/
   --no-llm               Skip LLM-powered evaluations (prompt effectiveness)

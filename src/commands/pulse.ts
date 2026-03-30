@@ -10,9 +10,9 @@ import { execSync } from "node:child_process";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, basename } from "node:path";
 
-export async function runPulse(projectDir: string): Promise<PulseReport> {
+export async function runPulse(projectDir: string, sessionPath?: string): Promise<PulseReport> {
   const project = basename(projectDir);
-  const sessionFile = findSessionFile(projectDir);
+  const sessionFile = sessionPath ?? findSessionFile(projectDir);
   const timeWindow = extractSessionTimeWindow(sessionFile);
   const filesChanged = countFilesChanged(projectDir, timeWindow);
   const convergence = extractConvergence(sessionFile, filesChanged);
