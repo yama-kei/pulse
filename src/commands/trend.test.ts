@@ -20,6 +20,7 @@ function makeReport(overrides: Record<string, unknown> = {}): Record<string, unk
     interactionPattern: { userStyle: "directive", contextProvision: "structured", observation: "" },
     promptEffectiveness: { available: false, events: [], scores: { contextProvision: 0, scopeDiscipline: 0, feedbackQuality: 0, decomposition: 0, verification: 0 }, overallScore: 0, rating: "developing", observation: "" },
     interactionLeverage: "MEDIUM",
+    leverageScore: 0.55,
     ...overrides,
   };
 }
@@ -55,8 +56,8 @@ describe("sparkline", () => {
 describe("extractTrends", () => {
   it("extracts all four metric trends", () => {
     const reports = [
-      makeReport({ timestamp: "2026-03-27T10:00:00.000Z", convergence: { exchanges: 5, outcomes: 3, rate: 2.0, reworkInstances: 1, reworkPercent: 10 }, interactionLeverage: "MEDIUM" }),
-      makeReport({ timestamp: "2026-03-26T10:00:00.000Z", convergence: { exchanges: 3, outcomes: 3, rate: 1.0, reworkInstances: 0, reworkPercent: 5 }, interactionLeverage: "HIGH" }),
+      makeReport({ timestamp: "2026-03-27T10:00:00.000Z", convergence: { exchanges: 5, outcomes: 3, rate: 2.0, reworkInstances: 1, reworkPercent: 10 }, interactionLeverage: "MEDIUM", leverageScore: 0.55 }),
+      makeReport({ timestamp: "2026-03-26T10:00:00.000Z", convergence: { exchanges: 3, outcomes: 3, rate: 1.0, reworkInstances: 0, reworkPercent: 5 }, interactionLeverage: "HIGH", leverageScore: 0.82 }),
     ] as unknown as PulseReport[];
 
     const trends = extractTrends(reports);

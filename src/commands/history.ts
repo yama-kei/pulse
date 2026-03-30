@@ -44,7 +44,9 @@ function summarize(report: PulseReport): ReportSummary {
     date: report.timestamp.slice(0, 10),
     convergenceRate: report.convergence.rate,
     promptScore: report.promptEffectiveness.available ? report.promptEffectiveness.overallScore : null,
-    leverage: report.interactionLeverage,
+    leverage: report.leverageScore !== undefined
+      ? `${report.leverageScore.toFixed(2)} (${report.interactionLeverage})`
+      : report.interactionLeverage,
     outcomes: report.convergence.outcomes,
   };
 }

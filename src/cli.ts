@@ -3,6 +3,7 @@ import { runActivity } from "./commands/activity.js";
 import { runHistory } from "./commands/history.js";
 import { runTrend } from "./commands/trend.js";
 import { runSessions } from "./commands/sessions.js";
+import { runCompare } from "./commands/compare.js";
 import { resolve } from "node:path";
 
 const args = process.argv.slice(2);
@@ -30,6 +31,9 @@ function main(): void {
       break;
     case "sessions":
       console.log(runSessions(args.slice(1)));
+      break;
+    case "compare":
+      console.log(runCompare(args.slice(1)));
       break;
     case "help":
     case "--help":
@@ -130,6 +134,7 @@ Usage:
   pulse activity <sub>   Session activity queries (sessions, summary, gc)
   pulse history [path]   Show saved pulse report history
   pulse trend [path]     Show metric trends over time
+  pulse compare          Compare metrics across time or projects
   pulse help             Show this help
   pulse version          Show version
 
@@ -147,6 +152,11 @@ Flags (history/trend):
   --range <N>d|h|m       Filter to reports within time range (e.g. 7d, 24h)
   --json                 Output as JSON array
   --metric <name>        Trend only: convergence, prompt, rework, leverage
+
+Flags (compare):
+  --before <date>        Split reports at date (e.g. 2026-03-15)
+  --json                 Output as JSON
+  (or: pulse compare /path/a /path/b for cross-project comparison)
 
 Run "pulse activity" for activity subcommand help.
 `.trim());

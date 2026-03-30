@@ -19,6 +19,7 @@ function makeReport(overrides: Record<string, unknown> = {}): Record<string, unk
     interactionPattern: { userStyle: "directive", contextProvision: "structured", observation: "" },
     promptEffectiveness: { available: false, events: [], scores: { contextProvision: 0, scopeDiscipline: 0, feedbackQuality: 0, decomposition: 0, verification: 0 }, overallScore: 0, rating: "developing", observation: "" },
     interactionLeverage: "MEDIUM",
+    leverageScore: 0.55,
     ...overrides,
   };
 }
