@@ -2,6 +2,7 @@ import { runPulse, formatReport, savePulse } from "./commands/pulse.js";
 import { runActivity } from "./commands/activity.js";
 import { runHistory } from "./commands/history.js";
 import { runTrend } from "./commands/trend.js";
+import { runSessions } from "./commands/sessions.js";
 import { resolve } from "node:path";
 
 const args = process.argv.slice(2);
@@ -24,6 +25,9 @@ function main(): void {
       break;
     case "trend":
       handleTrend();
+      break;
+    case "sessions":
+      console.log(runSessions(args.slice(1)));
       break;
     case "help":
     case "--help":
@@ -120,6 +124,7 @@ pulse — agent interaction quality measurement
 
 Usage:
   pulse [run] [path]     Run a pulse on the project (default: cwd)
+  pulse sessions         List sessions grouped by worktree (thread)
   pulse activity <sub>   Session activity queries (sessions, summary, gc)
   pulse history [path]   Show saved pulse report history
   pulse trend [path]     Show metric trends over time
@@ -131,6 +136,10 @@ Flags (run):
   --json                 Also output raw JSON
   --no-save              Don't save pulse report to .pulse/
   --no-llm               Skip LLM-powered evaluations (prompt effectiveness)
+
+Flags (sessions):
+  --range <N>d|h|m       Filter by time range (default: 7d)
+  --json                 Output as JSON
 
 Flags (history/trend):
   --range <N>d|h|m       Filter to reports within time range (e.g. 7d, 24h)
