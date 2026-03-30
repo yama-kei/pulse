@@ -224,13 +224,15 @@ describe("rework detection", () => {
     assert.equal(result.reworkInstances, 3);
   });
 
-  it("detects 'still *ing' as rework", () => {
+  it("detects 'still *ing' and 'still + present tense' as rework", () => {
     const session = createSessionFile([
       { type: "user", content: "still expanding vertically as it loads" },
       { type: "user", content: "still failing on the same test" },
+      { type: "user", content: "it still expands vertically as it loads" },
+      { type: "user", content: "the chart still shows the same problem" },
     ]);
     const result = extractConvergence(session, 1);
-    assert.equal(result.reworkInstances, 2);
+    assert.equal(result.reworkInstances, 4);
   });
 
   it("detects 'got worse' and 'getting worse' as rework", () => {
@@ -242,14 +244,17 @@ describe("rework detection", () => {
     assert.equal(result.reworkInstances, 2);
   });
 
-  it("detects 'didn't work' and 'doesn't work' and 'not working' as rework", () => {
+  it("detects 'didn't work/help/change' and 'doesn't work/help' and 'not working' as rework", () => {
     const session = createSessionFile([
       { type: "user", content: "that didn't work at all" },
       { type: "user", content: "this doesn't work either" },
       { type: "user", content: "it's not working" },
+      { type: "user", content: "that didn't help" },
+      { type: "user", content: "didn't change anything" },
+      { type: "user", content: "this doesn't help at all" },
     ]);
     const result = extractConvergence(session, 1);
-    assert.equal(result.reworkInstances, 3);
+    assert.equal(result.reworkInstances, 6);
   });
 
   it("detects 'same issue/problem/error/bug' as rework", () => {
@@ -263,22 +268,24 @@ describe("rework detection", () => {
     assert.equal(result.reworkInstances, 4);
   });
 
-  it("detects 'no change' and 'no difference' as rework", () => {
+  it("detects 'no change/difference/improvement/effect' as rework", () => {
     const session = createSessionFile([
       { type: "user", content: "no change from the last attempt" },
       { type: "user", content: "no difference after applying the fix" },
+      { type: "user", content: "no improvement at all" },
+      { type: "user", content: "no effect on the rendering" },
     ]);
     const result = extractConvergence(session, 1);
-    assert.equal(result.reworkInstances, 2);
+    assert.equal(result.reworkInstances, 4);
   });
 
   it("does not false-positive 'still' in normal context", () => {
     const session = createSessionFile([
       { type: "user", content: "I still need to add the tests" },
       { type: "user", content: "we still want this feature" },
+      { type: "user", content: "I still want to add logging" },
     ]);
     const result = extractConvergence(session, 1);
-    // "still need" and "still want" don't match /\bstill\s+\w+ing\b/
     assert.equal(result.reworkInstances, 0);
   });
 });
