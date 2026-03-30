@@ -159,16 +159,15 @@ const REWORK_PATTERNS = [
   /\bnever mind\b/i,
   /\bscratch that\b/i,
   /\bnot\s+fixed\b/i,
-  /\bdidn'?t\s+fix/i,
-  /\bdoesn'?t\s+fix/i,
+  /\bdidn'?t\s+(?:fix|work|help|change)/i,
+  /\bdoesn'?t\s+(?:work|help|fix)/i,
+  /\bstill\s+(?:broken|failing|happening|the same|not working|not fixed|expands?|shows?)\b/i,
   /\bstill\s+\w+ing\b/i,
   /\bgot\s+worse\b/i,
   /\bgetting\s+worse\b/i,
-  /\bdidn'?t\s+work/i,
-  /\bdoesn'?t\s+work/i,
   /\bnot\s+working\b/i,
   /\bsame\s+(issue|problem|error|bug)\b/i,
-  /\bno\s+(change|difference)\b/i,
+  /\bno\s+(change|difference|improvement|effect)\b/i,
 ];
 
 const GIT_COMMIT_RE = /\bgit\s+commit\b/;
