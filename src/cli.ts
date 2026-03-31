@@ -4,6 +4,7 @@ import { runHistory } from "./commands/history.js";
 import { runTrend } from "./commands/trend.js";
 import { runSessions } from "./commands/sessions.js";
 import { runCompare } from "./commands/compare.js";
+import { runAnonymize } from "./commands/anonymize.js";
 import { resolve } from "node:path";
 
 const args = process.argv.slice(2);
@@ -34,6 +35,9 @@ function main(): void {
       break;
     case "compare":
       console.log(runCompare(args.slice(1)));
+      break;
+    case "anonymize":
+      console.log(runAnonymize(args.slice(1)));
       break;
     case "help":
     case "--help":
@@ -156,6 +160,7 @@ Usage:
   pulse history [path]   Show saved pulse report history
   pulse trend [path]     Show metric trends over time
   pulse compare          Compare metrics across time or projects
+  pulse anonymize <path> Anonymize a session JSONL for safe sharing
   pulse help             Show this help
   pulse version          Show version
 
@@ -179,6 +184,9 @@ Flags (compare):
   --before <date>        Split reports at date (e.g. 2026-03-15)
   --json                 Output as JSON
   (or: pulse compare /path/a /path/b for cross-project comparison)
+
+Flags (anonymize):
+  --output <path>        Write to file instead of stdout
 
 Run "pulse activity" for activity subcommand help.
 `.trim());
