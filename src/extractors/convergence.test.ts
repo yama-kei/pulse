@@ -1,6 +1,7 @@
 import { describe, it, afterEach } from "node:test";
 import * as assert from "node:assert/strict";
-import { extractConvergence } from "./convergence.js";
+import { extractConvergence, computeAgentBreakdown } from "./convergence.js";
+import { CorrelatedMpgData, MpgSessionEvent } from "../types/pulse.js";
 import { writeFileSync, mkdtempSync, unlinkSync, rmdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -349,5 +350,90 @@ describe("duplicate commit deduplication", () => {
   it("returns duplicateCommits 0 when no session file", () => {
     const result = extractConvergence(null, 5);
     assert.equal(result.duplicateCommits, 0);
+  });
+});
+
+describe("MPG enrichment — per-agent convergence", () => {
+  function makeMpgEvent(overrides: Partial<MpgSessionEvent>): MpgSessionEvent {
+    return {
+      schema_version: 1,
+      timestamp: "2026-03-30T10:00:00Z",
+      event_type: "message_routed",
+      session_id: "test-session",
+      project_key: "test",
+      project_dir: "/test",
+      ...overrides,
+    };
+  }
+
+  it("returns no agentBreakdown when mpgData is undefined", () => {
+    const result = extractConvergence(null, 5);
+    assert.equal(result.agentBreakdown, undefined);
+  });
+
+  it("returns no agentBreakdown when mpgData is null", () => {
+    const result = extractConvergence(null, 5, null);
+    assert.equal(result.agentBreakdown, undefined);
+  });
+
+  it("returns no agentBreakdown when mpgData has no events", () => {
+    const result = extractConvergence(null, 5, { sessionId: "s", events: [] });
+    assert.equal(result.agentBreakdown, undefined);
+  });
+
+  it("computes per-agent breakdown from MPG message_routed events", () => {
+    const mpgData: CorrelatedMpgData = {
+      sessionId: "test",
+      events: [
+        makeMpgEvent({ agent_target: "engineer" }),
+        makeMpgEvent({ agent_target: "engineer" }),
+        makeMpgEvent({ agent_target: "engineer", is_error: true, error_type: "tool_failure" }),
+        makeMpgEvent({ agent_target: "pm" }),
+        makeMpgEvent({ event_type: "session_start" }), // should be skipped
+      ],
+    };
+    const result = extractConvergence(null, 5, mpgData);
+    assert.ok(result.agentBreakdown);
+    assert.equal(result.agentBreakdown!.length, 2);
+
+    const engineer = result.agentBreakdown!.find(a => a.agent === "engineer");
+    assert.ok(engineer);
+    assert.equal(engineer!.messages, 3);
+    assert.equal(engineer!.errors, 1);
+    assert.equal(engineer!.errorRate, 33.3);
+    assert.equal(engineer!.convergencePenalty, 0.5);
+
+    const pm = result.agentBreakdown!.find(a => a.agent === "pm");
+    assert.ok(pm);
+    assert.equal(pm!.messages, 1);
+    assert.equal(pm!.errors, 0);
+    assert.equal(pm!.errorRate, 0);
+    assert.equal(pm!.convergencePenalty, 0);
+  });
+
+  it("sorts agents by message count descending", () => {
+    const mpgData: CorrelatedMpgData = {
+      sessionId: "test",
+      events: [
+        makeMpgEvent({ agent_target: "qa" }),
+        makeMpgEvent({ agent_target: "engineer" }),
+        makeMpgEvent({ agent_target: "engineer" }),
+        makeMpgEvent({ agent_target: "engineer" }),
+      ],
+    };
+    const breakdown = computeAgentBreakdown(mpgData);
+    assert.equal(breakdown[0].agent, "engineer");
+    assert.equal(breakdown[1].agent, "qa");
+  });
+
+  it("falls back to persona when agent_target is not set", () => {
+    const mpgData: CorrelatedMpgData = {
+      sessionId: "test",
+      events: [
+        makeMpgEvent({ agent_target: undefined, persona: "reviewer" }),
+      ],
+    };
+    const breakdown = computeAgentBreakdown(mpgData);
+    assert.equal(breakdown[0].agent, "reviewer");
   });
 });

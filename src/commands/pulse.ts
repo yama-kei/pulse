@@ -5,6 +5,7 @@ import { extractDecisionQuality } from "../extractors/decision-quality.js";
 import { extractTokenUsage } from "../extractors/token-usage.js";
 import { extractInteractionPattern } from "../extractors/interaction-pattern.js";
 import { extractPromptEffectiveness } from "../extractors/prompt-effectiveness.js";
+import { correlateMpgEvents } from "../activity/mpg-correlator.js";
 import { loadReports } from "./history.js";
 import { execSync } from "node:child_process";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
@@ -15,11 +16,12 @@ export async function runPulse(projectDir: string, sessionPath?: string): Promis
   const sessionFile = sessionPath ?? findSessionFile(projectDir);
   const timeWindow = extractSessionTimeWindow(sessionFile);
   const filesChanged = countFilesChanged(projectDir, timeWindow);
-  const convergence = extractConvergence(sessionFile, filesChanged);
+  const mpgData = correlateMpgEvents(sessionFile);
+  const convergence = extractConvergence(sessionFile, filesChanged, mpgData);
   const decisionQuality = extractDecisionQuality(projectDir);
   const intentAnchoring = extractIntentAnchoring(projectDir, decisionQuality.commitMessages);
   const tokenUsage = extractTokenUsage(sessionFile, convergence.exchanges, convergence.outcomes);
-  const interactionPattern = extractInteractionPattern(sessionFile);
+  const interactionPattern = extractInteractionPattern(sessionFile, mpgData);
   const promptEffectiveness = await extractPromptEffectiveness(sessionFile);
   const interactionLeverage = computeLeverage(convergence, decisionQuality);
 
@@ -52,6 +54,13 @@ export function formatReport(report: PulseReport): string {
   lines.push("CONVERGENCE");
   lines.push(`  Exchanges to outcome:  ${c.rate} (${rateLabel(c.rate)})`);
   lines.push(`  Rework instances:      ${c.reworkInstances} (${c.reworkPercent}%)`);
+  if (c.agentBreakdown && c.agentBreakdown.length > 0) {
+    lines.push("  Per-agent breakdown:");
+    for (const a of c.agentBreakdown) {
+      const penaltyNote = a.convergencePenalty > 0 ? ` (+${a.convergencePenalty} penalty)` : "";
+      lines.push(`    ${a.agent.padEnd(16)} ${a.messages} msgs, ${a.errors} errors (${a.errorRate}%)${penaltyNote}`);
+    }
+  }
   lines.push("");
 
   // Intent Anchoring
@@ -94,6 +103,13 @@ export function formatReport(report: PulseReport): string {
   lines.push(`  User style:            ${ip.userStyle}`);
   lines.push(`  Context provision:     ${ip.contextProvision}`);
   lines.push(`  ${ip.observation}`);
+  if (ip.handoffs) {
+    const h = ip.handoffs;
+    lines.push(`  Handoff pattern:       ${h.pattern} (${h.totalHandoffs} handoffs)`);
+    for (const pair of h.handoffPairs) {
+      lines.push(`    ${pair.from} → ${pair.to}: ${pair.count}x`);
+    }
+  }
   lines.push("");
 
   // Prompt Effectiveness

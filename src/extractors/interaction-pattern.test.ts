@@ -1,9 +1,10 @@
-import { extractInteractionPattern } from "./interaction-pattern.js";
+import { extractInteractionPattern, computeHandoffPatterns } from "./interaction-pattern.js";
 import { writeFileSync, mkdtempSync, unlinkSync, rmdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { strict as assert } from "node:assert";
 import { describe, it, afterEach } from "node:test";
+import { CorrelatedMpgData, MpgSessionEvent } from "../types/pulse.js";
 
 let tmpFiles: string[] = [];
 let tmpDirs: string[] = [];
@@ -130,5 +131,105 @@ describe("interaction-pattern extractor", () => {
     ]);
     const result = extractInteractionPattern(session);
     assert.equal(result.userStyle, "directive");
+  });
+
+  it("returns no handoffs when mpgData is undefined", () => {
+    const session = createSessionFile([
+      { type: "user", content: "fix the bug" },
+    ]);
+    const result = extractInteractionPattern(session);
+    assert.equal(result.handoffs, undefined);
+  });
+
+  it("returns no handoffs when mpgData has no handoff events", () => {
+    const session = createSessionFile([
+      { type: "user", content: "fix the bug" },
+    ]);
+    const mpgData: CorrelatedMpgData = {
+      sessionId: "test",
+      events: [
+        { schema_version: 1, timestamp: "2026-03-30T10:00:00Z", event_type: "message_routed", session_id: "test", project_key: "t", project_dir: "/t", agent_target: "engineer" },
+      ],
+    };
+    const result = extractInteractionPattern(session, mpgData);
+    assert.equal(result.handoffs, undefined);
+  });
+
+  it("computes handoff patterns from agent_handoff events", () => {
+    const session = createSessionFile([
+      { type: "user", content: "implement the feature" },
+    ]);
+    const mpgData: CorrelatedMpgData = {
+      sessionId: "test",
+      events: [
+        { schema_version: 1, timestamp: "2026-03-30T10:00:00Z", event_type: "agent_handoff", session_id: "test", project_key: "t", project_dir: "/t", agent_source: "pm", agent_target: "engineer" },
+        { schema_version: 1, timestamp: "2026-03-30T10:01:00Z", event_type: "agent_handoff", session_id: "test", project_key: "t", project_dir: "/t", agent_source: "engineer", agent_target: "qa" },
+        { schema_version: 1, timestamp: "2026-03-30T10:02:00Z", event_type: "agent_handoff", session_id: "test", project_key: "t", project_dir: "/t", agent_source: "pm", agent_target: "engineer" },
+      ],
+    };
+    const result = extractInteractionPattern(session, mpgData);
+    assert.ok(result.handoffs);
+    assert.equal(result.handoffs!.totalHandoffs, 3);
+    assert.equal(result.handoffs!.handoffPairs.length, 2);
+    assert.equal(result.handoffs!.pattern, "pipeline");
+
+    const pmToEng = result.handoffs!.handoffPairs.find(p => p.from === "pm" && p.to === "engineer");
+    assert.ok(pmToEng);
+    assert.equal(pmToEng!.count, 2);
+  });
+});
+
+describe("handoff pattern classification", () => {
+  function makeHandoff(from: string, to: string): MpgSessionEvent {
+    return {
+      schema_version: 1,
+      timestamp: "2026-03-30T10:00:00Z",
+      event_type: "agent_handoff",
+      session_id: "test",
+      project_key: "t",
+      project_dir: "/t",
+      agent_source: from,
+      agent_target: to,
+    };
+  }
+
+  it("classifies pipeline pattern (linear flow)", () => {
+    const mpgData: CorrelatedMpgData = {
+      sessionId: "test",
+      events: [
+        makeHandoff("pm", "engineer"),
+        makeHandoff("engineer", "qa"),
+        makeHandoff("pm", "engineer"),
+      ],
+    };
+    const result = computeHandoffPatterns(mpgData);
+    assert.ok(result);
+    assert.equal(result!.pattern, "pipeline");
+  });
+
+  it("classifies iterative pattern (back-and-forth)", () => {
+    const mpgData: CorrelatedMpgData = {
+      sessionId: "test",
+      events: [
+        makeHandoff("pm", "engineer"),
+        makeHandoff("engineer", "pm"),
+        makeHandoff("pm", "engineer"),
+        makeHandoff("engineer", "pm"),
+      ],
+    };
+    const result = computeHandoffPatterns(mpgData);
+    assert.ok(result);
+    assert.equal(result!.pattern, "iterative");
+  });
+
+  it("returns null when no handoff events exist", () => {
+    const mpgData: CorrelatedMpgData = {
+      sessionId: "test",
+      events: [
+        { schema_version: 1, timestamp: "2026-03-30T10:00:00Z", event_type: "message_routed", session_id: "test", project_key: "t", project_dir: "/t" },
+      ],
+    };
+    const result = computeHandoffPatterns(mpgData);
+    assert.equal(result, null);
   });
 });
