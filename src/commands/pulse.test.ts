@@ -1,9 +1,9 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import * as assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { loadHistoricalScores, formatDelta } from "./pulse.js";
+import { loadHistoricalScores, formatDelta, runPulse, computeLeverage } from "./pulse.js";
 
 const tmp = join(tmpdir(), "pulse-coaching-test-" + process.pid);
 
@@ -12,7 +12,7 @@ function makeReport(overrides: Record<string, unknown> = {}): Record<string, unk
     timestamp: "2026-03-27T10:00:00.000Z",
     project: "test",
     cwd: "/tmp/test",
-    convergence: { exchanges: 5, outcomes: 3, rate: 1.67, reworkInstances: 1, reworkPercent: 20 },
+    convergence: { exchanges: 5, outcomes: 3, rate: 1.67, reworkInstances: 1, reworkPercent: 20, duplicateCommits: 0, blindRetries: 0, pivot: null },
     intentAnchoring: { intentsPresent: false, claudeMdPresent: false, declaredIntents: [], relevantIntents: [], referencedIntents: [], gap: [], intentLayerCheck: null },
     decisionQuality: { commitsTotal: 3, commitsWithWhy: 1, commitsWithIssueRef: 0, externalContextProvided: false, commitMessages: [] },
     tokenUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, tokensPerExchange: 0, tokensPerOutcome: 0, available: false },
@@ -27,9 +27,59 @@ function makeReport(overrides: Record<string, unknown> = {}): Record<string, unk
       coaching: [],
     },
     interactionLeverage: "MEDIUM",
+    leverageScore: 0.55,
     ...overrides,
   };
 }
+
+describe("computeLeverage", () => {
+  it("returns HIGH score for perfect session", () => {
+    const convergence = { exchanges: 3, outcomes: 3, rate: 1.0, reworkInstances: 0, reworkPercent: 0, duplicateCommits: 0, blindRetries: 0, pivot: null };
+    const dq = { commitsTotal: 3, commitsWithWhy: 3, commitsWithIssueRef: 3, externalContextProvided: false, commitMessages: [] };
+    const { score, label } = computeLeverage(convergence, dq);
+    assert.ok(score >= 0.7, `expected HIGH, got score ${score}`);
+    assert.equal(label, "HIGH");
+  });
+
+  it("returns LOW score for poor session", () => {
+    const convergence = { exchanges: 20, outcomes: 2, rate: 10.0, reworkInstances: 5, reworkPercent: 25, duplicateCommits: 0, blindRetries: 0, pivot: null };
+    const dq = { commitsTotal: 2, commitsWithWhy: 0, commitsWithIssueRef: 0, externalContextProvided: false, commitMessages: [] };
+    const { score, label } = computeLeverage(convergence, dq);
+    assert.ok(score < 0.4, `expected LOW, got score ${score}`);
+    assert.equal(label, "LOW");
+  });
+
+  it("returns MEDIUM score for average session", () => {
+    const convergence = { exchanges: 6, outcomes: 3, rate: 2.0, reworkInstances: 1, reworkPercent: 10, duplicateCommits: 0, blindRetries: 0, pivot: null };
+    const dq = { commitsTotal: 3, commitsWithWhy: 2, commitsWithIssueRef: 1, externalContextProvided: false, commitMessages: [] };
+    const { score, label } = computeLeverage(convergence, dq);
+    assert.ok(score >= 0.4 && score < 0.7, `expected MEDIUM, got score ${score}`);
+    assert.equal(label, "MEDIUM");
+  });
+
+  it("score is always between 0 and 1", () => {
+    // Edge case: extreme values
+    const convergence = { exchanges: 100, outcomes: 1, rate: 100, reworkInstances: 100, reworkPercent: 100, duplicateCommits: 0, blindRetries: 0, pivot: null };
+    const dq = { commitsTotal: 0, commitsWithWhy: 0, commitsWithIssueRef: 0, externalContextProvided: false, commitMessages: [] };
+    const { score } = computeLeverage(convergence, dq);
+    assert.ok(score >= 0, `score should be >= 0, got ${score}`);
+    assert.ok(score <= 1, `score should be <= 1, got ${score}`);
+  });
+
+  it("handles zero commits gracefully", () => {
+    const convergence = { exchanges: 3, outcomes: 1, rate: 3.0, reworkInstances: 0, reworkPercent: 0, duplicateCommits: 0, blindRetries: 0, pivot: null };
+    const dq = { commitsTotal: 0, commitsWithWhy: 0, commitsWithIssueRef: 0, externalContextProvided: false, commitMessages: [] };
+    const { score } = computeLeverage(convergence, dq);
+    assert.ok(score >= 0 && score <= 1);
+  });
+
+  it("handles zero rate (no exchanges or perfect ratio)", () => {
+    const convergence = { exchanges: 0, outcomes: 0, rate: 0, reworkInstances: 0, reworkPercent: 0, duplicateCommits: 0, blindRetries: 0, pivot: null };
+    const dq = { commitsTotal: 5, commitsWithWhy: 5, commitsWithIssueRef: 5, externalContextProvided: false, commitMessages: [] };
+    const { score } = computeLeverage(convergence, dq);
+    assert.ok(score >= 0.7, `expected HIGH for perfect outcome quality + zero rate, got ${score}`);
+  });
+});
 
 describe("loadHistoricalScores", () => {
   beforeEach(() => mkdirSync(join(tmp, ".pulse"), { recursive: true }));
@@ -181,5 +231,44 @@ describe("formatDelta", () => {
   it("returns empty string for very small difference", () => {
     const result = formatDelta(0.505, 0.5);
     assert.equal(result, "");
+  });
+});
+
+describe("runPulse with --session path", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "pulse-session-flag-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("uses provided session file instead of auto-discovery", async () => {
+    const sessionFile = join(tmpDir, "test-session.jsonl");
+    writeFileSync(
+      sessionFile,
+      [
+        JSON.stringify({ type: "user", message: { role: "user", content: "add a button" } }),
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "tool_use", name: "Edit", input: { file_path: "/tmp/a.ts" } }],
+          },
+        }),
+      ].join("\n") + "\n"
+    );
+
+    const report = await runPulse(tmpDir, sessionFile);
+    assert.equal(report.convergence.exchanges, 1);
+    assert.equal(report.convergence.outcomes >= 1, true);
+  });
+
+  it("falls back to auto-discovery when no session path given", async () => {
+    // No session file will be found for tmpDir, so convergence should have 0 exchanges
+    const report = await runPulse(tmpDir);
+    assert.equal(report.convergence.exchanges, 0);
   });
 });

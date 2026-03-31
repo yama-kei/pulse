@@ -1,6 +1,7 @@
 import { describe, it, afterEach } from "node:test";
 import * as assert from "node:assert/strict";
-import { extractConvergence } from "./convergence.js";
+import { extractConvergence, computeAgentBreakdown } from "./convergence.js";
+import { CorrelatedMpgData, MpgSessionEvent } from "../types/pulse.js";
 import { writeFileSync, mkdtempSync, unlinkSync, rmdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -214,117 +215,225 @@ describe("rework detection", () => {
     assert.equal(result.reworkInstances, 0);
   });
 
-  it("detects blind-retry patterns: 'not fixed', 'didn't work', 'still broken'", () => {
+  it("detects 'not fixed' and 'didn't fix' as rework", () => {
     const session = createSessionFile([
-      { type: "user", content: "Not fixed even after I restart with latest changes" },
-      { type: "user", content: "that didn't work, the chart is still broken" },
-      { type: "user", content: "doesn't work, same issue" },
+      { type: "user", content: "Not fixed even after I restart" },
+      { type: "user", content: "that didn't fix the issue" },
+      { type: "user", content: "this doesn't fix anything" },
     ]);
     const result = extractConvergence(session, 1);
     assert.equal(result.reworkInstances, 3);
+  });
+
+  it("detects 'still *ing' and 'still + present tense' as rework", () => {
+    const session = createSessionFile([
+      { type: "user", content: "still expanding vertically as it loads" },
+      { type: "user", content: "still failing on the same test" },
+      { type: "user", content: "it still expands vertically as it loads" },
+      { type: "user", content: "the chart still shows the same problem" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.equal(result.reworkInstances, 4);
   });
 
   it("detects 'got worse' and 'getting worse' as rework", () => {
     const session = createSessionFile([
-      { type: "user", content: "No, it got worse...graphs are expanding even faster" },
-      { type: "user", content: "it's getting worse with each change" },
+      { type: "user", content: "it got worse after that change" },
+      { type: "user", content: "the performance is getting worse" },
     ]);
     const result = extractConvergence(session, 1);
     assert.equal(result.reworkInstances, 2);
   });
 
-  it("detects 'still expanding', 'still happening' as rework", () => {
+  it("detects 'didn't work/help/change' and 'doesn't work/help' and 'not working' as rework", () => {
     const session = createSessionFile([
-      { type: "user", content: "it still expands vertically as it loads more data" },
-      { type: "user", content: "the error is still happening after the fix" },
+      { type: "user", content: "that didn't work at all" },
+      { type: "user", content: "this doesn't work either" },
+      { type: "user", content: "it's not working" },
+      { type: "user", content: "that didn't help" },
+      { type: "user", content: "didn't change anything" },
+      { type: "user", content: "this doesn't help at all" },
     ]);
     const result = extractConvergence(session, 1);
-    assert.equal(result.reworkInstances, 2);
+    assert.equal(result.reworkInstances, 6);
   });
 
-  it("detects 'no change', 'no difference', 'no improvement' as rework", () => {
+  it("detects 'same issue/problem/error/bug' as rework", () => {
     const session = createSessionFile([
-      { type: "user", content: "no change after deploying your fix" },
-      { type: "user", content: "I see no difference" },
+      { type: "user", content: "same issue as before" },
+      { type: "user", content: "same problem, nothing changed" },
+      { type: "user", content: "same error in the logs" },
+      { type: "user", content: "same bug, it's back" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.equal(result.reworkInstances, 4);
+  });
+
+  it("detects 'no change/difference/improvement/effect' as rework", () => {
+    const session = createSessionFile([
+      { type: "user", content: "no change from the last attempt" },
+      { type: "user", content: "no difference after applying the fix" },
       { type: "user", content: "no improvement at all" },
+      { type: "user", content: "no effect on the rendering" },
     ]);
     const result = extractConvergence(session, 1);
-    assert.equal(result.reworkInstances, 3);
-  });
-
-  it("detects 'not working' as rework", () => {
-    const session = createSessionFile([
-      { type: "user", content: "the timeline is not working correctly" },
-    ]);
-    const result = extractConvergence(session, 1);
-    assert.equal(result.reworkInstances, 1);
+    assert.equal(result.reworkInstances, 4);
   });
 
   it("does not false-positive 'still' in normal context", () => {
     const session = createSessionFile([
-      { type: "user", content: "I still want to add the login feature" },
-      { type: "user", content: "we still need to handle edge cases" },
+      { type: "user", content: "I still need to add the tests" },
+      { type: "user", content: "we still want this feature" },
+      { type: "user", content: "I still want to add logging" },
     ]);
     const result = extractConvergence(session, 1);
     assert.equal(result.reworkInstances, 0);
   });
 });
 
-describe("outcome deduplication", () => {
-  it("deduplicates commits referencing the same issue number", () => {
+describe("duplicate commit deduplication", () => {
+  it("deduplicates commits with the same issue ref", () => {
     const session = createRawSessionFile([
-      userMsg("fix the timeline"),
+      userMsg("fix the bug"),
       toolUseMsg("Bash", { command: 'git commit -m "fix(#93): make bars thicker"' }),
-      toolUseMsg("Bash", { command: 'git commit -m "fix(#93): collapse segments"' }),
-      toolUseMsg("Bash", { command: 'git commit -m "fix(#93): rewrite with canvas plugin"' }),
+      toolUseMsg("Bash", { command: 'git commit -m "fix(#93): actually make bars thicker"' }),
     ]);
     const result = extractConvergence(session, 0);
-    // 3 commits to #93 = 1 outcome, not 3
     assert.equal(result.outcomes, 1);
+    assert.equal(result.duplicateCommits, 1);
   });
 
-  it("counts commits to different issues as separate outcomes", () => {
+  it("counts commits with different issue refs as separate outcomes", () => {
     const session = createRawSessionFile([
-      userMsg("fix both issues"),
-      toolUseMsg("Bash", { command: 'git commit -m "fix(#93): timeline bars"' }),
-      toolUseMsg("Bash", { command: 'git commit -m "fix(#94): session ID column"' }),
+      userMsg("fix bugs"),
+      toolUseMsg("Bash", { command: 'git commit -m "fix(#93): bars"' }),
+      toolUseMsg("Bash", { command: 'git commit -m "fix(#94): colors"' }),
     ]);
     const result = extractConvergence(session, 0);
     assert.equal(result.outcomes, 2);
+    assert.equal(result.duplicateCommits, 0);
   });
 
   it("counts commits without issue refs individually", () => {
     const session = createRawSessionFile([
-      userMsg("make some changes"),
-      toolUseMsg("Bash", { command: 'git commit -m "chore: cleanup"' }),
-      toolUseMsg("Bash", { command: 'git commit -m "docs: update readme"' }),
+      userMsg("do stuff"),
+      toolUseMsg("Bash", { command: 'git commit -m "fix something"' }),
+      toolUseMsg("Bash", { command: 'git commit -m "fix something else"' }),
     ]);
     const result = extractConvergence(session, 0);
     assert.equal(result.outcomes, 2);
+    assert.equal(result.duplicateCommits, 0);
   });
 
-  it("mixes issue-ref dedup with non-ref commits correctly", () => {
+  it("counts mixed ref and no-ref commits correctly", () => {
     const session = createRawSessionFile([
-      userMsg("fix and cleanup"),
-      toolUseMsg("Bash", { command: 'git commit -m "fix(#93): attempt 1"' }),
-      toolUseMsg("Bash", { command: 'git commit -m "fix(#93): attempt 2"' }),
-      toolUseMsg("Bash", { command: 'git commit -m "chore: unrelated cleanup"' }),
+      userMsg("fix"),
+      toolUseMsg("Bash", { command: 'git commit -m "fix(#93): first"' }),
+      toolUseMsg("Bash", { command: 'git commit -m "unrelated change"' }),
     ]);
     const result = extractConvergence(session, 0);
-    // 1 (deduped #93) + 1 (no-ref commit) = 2
     assert.equal(result.outcomes, 2);
+    assert.equal(result.duplicateCommits, 0);
   });
 
-  it("still combines with file edits and PRs", () => {
+  it("handles single-quoted commit messages", () => {
     const session = createRawSessionFile([
-      userMsg("fix and ship"),
-      toolUseMsg("Edit", { file_path: "/tmp/a.ts", old_string: "x", new_string: "y" }),
-      toolUseMsg("Bash", { command: 'git commit -m "fix(#93): attempt 1"' }),
-      toolUseMsg("Bash", { command: 'git commit -m "fix(#93): attempt 2"' }),
-      toolUseMsg("Bash", { command: 'gh pr create --title "fix"' }),
+      userMsg("fix"),
+      toolUseMsg("Bash", { command: "git commit -m 'fix(#93): first'" }),
+      toolUseMsg("Bash", { command: "git commit -m 'fix(#93): second'" }),
     ]);
     const result = extractConvergence(session, 0);
-    // 1 file + 1 deduped issue + 1 PR = 3
-    assert.equal(result.outcomes, 3);
+    assert.equal(result.outcomes, 1);
+    assert.equal(result.duplicateCommits, 1);
+  });
+
+  it("returns duplicateCommits 0 when no session file", () => {
+    const result = extractConvergence(null, 5);
+    assert.equal(result.duplicateCommits, 0);
+  });
+});
+
+describe("MPG enrichment — per-agent convergence", () => {
+  function makeMpgEvent(overrides: Partial<MpgSessionEvent>): MpgSessionEvent {
+    return {
+      schema_version: 1,
+      timestamp: "2026-03-30T10:00:00Z",
+      event_type: "message_routed",
+      session_id: "test-session",
+      project_key: "test",
+      project_dir: "/test",
+      ...overrides,
+    };
+  }
+
+  it("returns no agentBreakdown when mpgData is undefined", () => {
+    const result = extractConvergence(null, 5);
+    assert.equal(result.agentBreakdown, undefined);
+  });
+
+  it("returns no agentBreakdown when mpgData is null", () => {
+    const result = extractConvergence(null, 5, null);
+    assert.equal(result.agentBreakdown, undefined);
+  });
+
+  it("returns no agentBreakdown when mpgData has no events", () => {
+    const result = extractConvergence(null, 5, { sessionId: "s", events: [] });
+    assert.equal(result.agentBreakdown, undefined);
+  });
+
+  it("computes per-agent breakdown from MPG message_routed events", () => {
+    const mpgData: CorrelatedMpgData = {
+      sessionId: "test",
+      events: [
+        makeMpgEvent({ agent_target: "engineer" }),
+        makeMpgEvent({ agent_target: "engineer" }),
+        makeMpgEvent({ agent_target: "engineer", is_error: true, error_type: "tool_failure" }),
+        makeMpgEvent({ agent_target: "pm" }),
+        makeMpgEvent({ event_type: "session_start" }), // should be skipped
+      ],
+    };
+    const result = extractConvergence(null, 5, mpgData);
+    assert.ok(result.agentBreakdown);
+    assert.equal(result.agentBreakdown!.length, 2);
+
+    const engineer = result.agentBreakdown!.find(a => a.agent === "engineer");
+    assert.ok(engineer);
+    assert.equal(engineer!.messages, 3);
+    assert.equal(engineer!.errors, 1);
+    assert.equal(engineer!.errorRate, 33.3);
+    assert.equal(engineer!.convergencePenalty, 0.5);
+
+    const pm = result.agentBreakdown!.find(a => a.agent === "pm");
+    assert.ok(pm);
+    assert.equal(pm!.messages, 1);
+    assert.equal(pm!.errors, 0);
+    assert.equal(pm!.errorRate, 0);
+    assert.equal(pm!.convergencePenalty, 0);
+  });
+
+  it("sorts agents by message count descending", () => {
+    const mpgData: CorrelatedMpgData = {
+      sessionId: "test",
+      events: [
+        makeMpgEvent({ agent_target: "qa" }),
+        makeMpgEvent({ agent_target: "engineer" }),
+        makeMpgEvent({ agent_target: "engineer" }),
+        makeMpgEvent({ agent_target: "engineer" }),
+      ],
+    };
+    const breakdown = computeAgentBreakdown(mpgData);
+    assert.equal(breakdown[0].agent, "engineer");
+    assert.equal(breakdown[1].agent, "qa");
+  });
+
+  it("falls back to persona when agent_target is not set", () => {
+    const mpgData: CorrelatedMpgData = {
+      sessionId: "test",
+      events: [
+        makeMpgEvent({ agent_target: undefined, persona: "reviewer" }),
+      ],
+    };
+    const breakdown = computeAgentBreakdown(mpgData);
+    assert.equal(breakdown[0].agent, "reviewer");
   });
 });

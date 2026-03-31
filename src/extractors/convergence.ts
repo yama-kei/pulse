@@ -1,4 +1,4 @@
-import { ConvergenceSignal, PivotSignal } from "../types/pulse.js";
+import { ConvergenceSignal, PivotSignal, AgentConvergenceStats, CorrelatedMpgData } from "../types/pulse.js";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -29,11 +29,13 @@ export interface SessionTimeWindow {
  */
 export function extractConvergence(
   sessionPath: string | null,
-  filesChanged: number
+  filesChanged: number,
+  mpgData?: CorrelatedMpgData | null
 ): ConvergenceSignal {
   let exchanges = 0;
   let reworkInstances = 0;
   let sessionOutcomes = 0;
+  let duplicateCommits = 0;
   let blindRetries = 0;
   let pivot: PivotSignal | null = null;
 
@@ -42,6 +44,7 @@ export function extractConvergence(
     exchanges = parsed.exchanges;
     reworkInstances = parsed.reworkInstances;
     sessionOutcomes = parsed.outcomes;
+    duplicateCommits = parsed.duplicateCommits;
     blindRetries = parsed.blindRetries;
     pivot = parsed.pivot;
   }
@@ -51,7 +54,45 @@ export function extractConvergence(
   const rate = exchanges > 0 ? round(exchanges / outcomes, 2) : 0;
   const reworkPercent = exchanges > 0 ? round((reworkInstances / exchanges) * 100, 1) : 0;
 
-  return { exchanges, outcomes, rate, reworkInstances, reworkPercent, blindRetries, pivot };
+  const signal: ConvergenceSignal = {
+    exchanges, outcomes, rate, reworkInstances, reworkPercent,
+    duplicateCommits, blindRetries, pivot,
+  };
+
+  // Enrich with per-agent breakdown when MPG data is available
+  if (mpgData && mpgData.events.length > 0) {
+    signal.agentBreakdown = computeAgentBreakdown(mpgData);
+  }
+
+  return signal;
+}
+
+/**
+ * Compute per-agent convergence stats from correlated MPG events.
+ * Groups message_routed events by agent_target, counts errors,
+ * and computes a convergence penalty based on error rate.
+ */
+export function computeAgentBreakdown(mpgData: CorrelatedMpgData): AgentConvergenceStats[] {
+  const agentMap = new Map<string, { messages: number; errors: number }>();
+
+  for (const event of mpgData.events) {
+    if (event.event_type !== "message_routed") continue;
+    const agent = event.agent_target || event.persona || "unknown";
+    const entry = agentMap.get(agent) || { messages: 0, errors: 0 };
+    entry.messages++;
+    if (event.is_error) entry.errors++;
+    agentMap.set(agent, entry);
+  }
+
+  const stats: AgentConvergenceStats[] = [];
+  for (const [agent, data] of agentMap) {
+    const errorRate = data.messages > 0 ? round((data.errors / data.messages) * 100, 1) : 0;
+    const convergencePenalty = round(data.errors * 0.5, 2);
+    stats.push({ agent, messages: data.messages, errors: data.errors, errorRate, convergencePenalty });
+  }
+
+  stats.sort((a, b) => b.messages - a.messages);
+  return stats;
 }
 
 /**
@@ -99,11 +140,8 @@ export function findSessionFile(projectDir: string): string | null {
 
   try {
     const dirs = readdirSync(claudeProjectsDir);
-    // Claude Code encodes paths by replacing / with -
-    // e.g. /home/yamakei/Documents/HouseholdOS -> -home-yamakei-Documents-HouseholdOS
     const projectEncoded = projectDir.replace(/\//g, "-");
     for (const dir of dirs) {
-      // Match: exact encoded path, or dir starts with encoded path (worktrees)
       if (dir === projectEncoded || dir.startsWith(projectEncoded + "-")) {
         const fullDir = join(claudeProjectsDir, dir);
         try {
@@ -122,7 +160,6 @@ export function findSessionFile(projectDir: string): string | null {
 
   if (candidates.length === 0) return null;
 
-  // Return the most recently modified
   let best = candidates[0];
   let bestTime = 0;
   for (const c of candidates) {
@@ -160,16 +197,16 @@ const REWORK_PATTERNS = [
   /\bhold on\b/i,
   /\bnever mind\b/i,
   /\bscratch that\b/i,
-  // Blind-retry patterns: user reports fix didn't work (#30)
-  /\bnot fixed\b/i,
-  /\bdidn'?t (?:fix|work|help|change)\b/i,
-  /\bdoesn'?t (?:work|help|fix)\b/i,
-  /\bstill (?:broken|failing|happening|the same|not working|not fixed|expands?|shows?)\b/i,
-  /\bgot worse\b/i,
-  /\bgetting worse\b/i,
-  /\bsame (?:issue|problem|error|bug)\b/i,
-  /\bno (?:change|difference|improvement|effect)\b/i,
-  /\bnot working\b/i,
+  /\bnot\s+fixed\b/i,
+  /\bdidn'?t\s+(?:fix|work|help|change)/i,
+  /\bdoesn'?t\s+(?:work|help|fix)/i,
+  /\bstill\s+(?:broken|failing|happening|the same|not working|not fixed|expands?|shows?)\b/i,
+  /\bstill\s+\w+ing\b/i,
+  /\bgot\s+worse\b/i,
+  /\bgetting\s+worse\b/i,
+  /\bnot\s+working\b/i,
+  /\bsame\s+(issue|problem|error|bug)\b/i,
+  /\bno\s+(change|difference|improvement|effect)\b/i,
 ];
 
 /** Patterns indicating the user is asking a diagnostic question, not ordering a fix */
@@ -200,28 +237,14 @@ const ROOT_CAUSE_REQUEST_PATTERNS = [
 const GIT_COMMIT_RE = /\bgit\s+commit\b/;
 const GH_PR_CREATE_RE = /\bgh\s+pr\s+create\b/;
 const GH_ISSUE_CREATE_RE = /\bgh\s+issue\s+create\b/;
+const COMMIT_MSG_RE = /-m\s+(?:"([^"]*?)"|'([^']*?)')/;
 const ISSUE_REF_RE = /#(\d+)/g;
-
-/**
- * Extract issue references from a git commit command's message flag.
- * Returns set of issue numbers like {"93", "42"}.
- */
-function extractIssueRefs(commitCmd: string): Set<string> {
-  const refs = new Set<string>();
-  // Match -m "..." or -m '...' content
-  const msgMatch = commitCmd.match(/-m\s+["']([^"']+)["']/);
-  if (msgMatch) {
-    for (const m of msgMatch[1].matchAll(ISSUE_REF_RE)) {
-      refs.add(m[1]);
-    }
-  }
-  return refs;
-}
 
 function parseSessionMessages(sessionPath: string): {
   exchanges: number;
   reworkInstances: number;
   outcomes: number;
+  duplicateCommits: number;
   blindRetries: number;
   pivot: PivotSignal | null;
 } {
@@ -229,14 +252,13 @@ function parseSessionMessages(sessionPath: string): {
   let reworkInstances = 0;
   const editedFiles = new Set<string>();
   let commits = 0;
-  const commitIssueRefs = new Set<string>();
+  let duplicateCommits = 0;
+  const seenIssueRefs = new Set<string>();
   let prs = 0;
   let issues = 0;
 
   // Track message flow for blind-retry and pivot detection
-  // Each user message is classified to analyze the sequence
   const messageClasses: Array<"rework" | "diagnostic" | "pivot_issue" | "pivot_rootcause" | "other"> = [];
-  // Track whether agent made edits/commits between user messages
   let agentActedSinceLastUser = false;
 
   try {
@@ -259,8 +281,6 @@ function parseSessionMessages(sessionPath: string): {
 
           // Classify message for sequence analysis.
           // Priority: issue_creation > diagnostic > root_cause_request > rework > other
-          // Diagnostic takes priority over root_cause_request because asking "why?"
-          // is an investigation step, not an escalation.
           const isDiagnostic = DIAGNOSTIC_PATTERNS.some(p => p.test(text));
           const isPivotIssue = PIVOT_PATTERNS.some(p => p.test(text));
           const isPivotRootCause = ROOT_CAUSE_REQUEST_PATTERNS.some(p => p.test(text));
@@ -279,7 +299,6 @@ function parseSessionMessages(sessionPath: string): {
 
           agentActedSinceLastUser = false;
         } else if (msg.type === "assistant") {
-          // Count tool_use blocks as outcomes
           const blocks = msg.message?.content;
           if (!Array.isArray(blocks)) continue;
 
@@ -295,9 +314,24 @@ function parseSessionMessages(sessionPath: string): {
             } else if (name === "Bash") {
               const cmd = typeof input.command === "string" ? input.command : "";
               if (GIT_COMMIT_RE.test(cmd)) {
-                const refs = extractIssueRefs(cmd);
-                if (refs.size > 0) {
-                  for (const ref of refs) commitIssueRefs.add(ref);
+                // Deduplicate commits by issue ref
+                const msgMatch = cmd.match(COMMIT_MSG_RE);
+                const commitMsg = msgMatch ? (msgMatch[1] ?? msgMatch[2] ?? "") : "";
+                const refs: string[] = [];
+                let refMatch: RegExpExecArray | null;
+                const issueRe = new RegExp(ISSUE_REF_RE.source, "g");
+                while ((refMatch = issueRe.exec(commitMsg)) !== null) {
+                  refs.push(refMatch[1]);
+                }
+
+                if (refs.length > 0) {
+                  const allSeen = refs.every(r => seenIssueRefs.has(r));
+                  if (allSeen) {
+                    duplicateCommits++;
+                  } else {
+                    commits++;
+                    for (const r of refs) seenIssueRefs.add(r);
+                  }
                 } else {
                   commits++;
                 }
@@ -316,29 +350,25 @@ function parseSessionMessages(sessionPath: string): {
     // session file unreadable
   }
 
-  const outcomes = editedFiles.size + commits + commitIssueRefs.size + prs + issues;
+  const outcomes = editedFiles.size + commits + prs + issues;
   const blindRetries = detectBlindRetries(messageClasses);
   const pivot = detectPivot(messageClasses);
 
-  return { exchanges, reworkInstances, outcomes, blindRetries, pivot };
+  return { exchanges, reworkInstances, outcomes, duplicateCommits, blindRetries, pivot };
 }
 
 /**
  * Detect blind-retry loops: consecutive rework messages without
- * a diagnostic exchange in between. Each rework→rework sequence
- * (skipping "other" messages like "commit" or "push") counts as one blind retry.
- * Pivot messages count as rework for chain purposes — the user is still
- * expressing that the fix didn't work, they've just also asked to escalate.
+ * a diagnostic exchange in between. Pivot messages count as rework
+ * for chain purposes — the user is still expressing the fix didn't work.
  */
 function detectBlindRetries(classes: string[]): number {
   let retries = 0;
   let lastSignificant: string | null = null;
 
   for (const cls of classes) {
-    // Skip neutral messages (commit instructions, confirmations)
     if (cls === "other") continue;
 
-    // Pivot messages carry rework semantics (the fix failed AND user escalated)
     const isReworkLike = cls === "rework" || cls === "pivot_issue" || cls === "pivot_rootcause";
 
     if (isReworkLike && lastSignificant === "rework") {
@@ -352,11 +382,9 @@ function detectBlindRetries(classes: string[]): number {
 
 /**
  * Detect mid-session pivot: user switches from fix attempts to structured debugging.
- * A pivot is when the session has rework/other messages before a pivot_issue or
- * pivot_rootcause message, indicating the user gave up on blind fixing.
+ * A pivot requires ≥2 fix attempts before the pivot message.
  */
 function detectPivot(classes: string[]): PivotSignal | null {
-  // Count fix-like messages before any pivot
   let fixAttempts = 0;
   let hasRework = false;
 
@@ -367,10 +395,8 @@ function detectPivot(classes: string[]): PivotSignal | null {
       hasRework = true;
       fixAttempts++;
     } else if (cls === "other") {
-      // "other" messages that come after rework are likely fix instructions
       if (hasRework) fixAttempts++;
     } else if (cls === "pivot_issue" || cls === "pivot_rootcause") {
-      // Only count as a pivot if there were fix attempts before it
       if (fixAttempts >= 2) {
         return {
           atExchange: i,
@@ -379,7 +405,6 @@ function detectPivot(classes: string[]): PivotSignal | null {
         };
       }
     } else if (cls === "diagnostic") {
-      // Diagnostic message breaks the blind-fix chain — reset
       fixAttempts = 0;
       hasRework = false;
     }

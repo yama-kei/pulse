@@ -9,6 +9,21 @@ export interface PulseReport {
   interactionPattern: InteractionPatternSignal;
   promptEffectiveness: PromptEffectivenessSignal;
   interactionLeverage: "HIGH" | "MEDIUM" | "LOW";
+  leverageScore: number;
+}
+
+export interface AgentReport {
+  role: string;
+  sessionPath: string;
+  report: PulseReport;
+}
+
+export interface ThreadPulseReport {
+  timestamp: string;
+  worktreeId: string;
+  project: string;
+  agents: AgentReport[];
+  aggregate: PulseReport;
 }
 
 export interface TokenUsageSignal {
@@ -37,10 +52,14 @@ export interface ConvergenceSignal {
   reworkInstances: number;
   /** reworkInstances / exchanges as percentage */
   reworkPercent: number;
+  /** Commits referencing the same issue as a prior commit (not counted as outcomes) */
+  duplicateCommits: number;
   /** Consecutive fix-fail cycles without diagnosis in between (#30 approach A) */
   blindRetries: number;
   /** Whether user pivoted from direct fixes to structured debugging mid-session (#30 approach B) */
   pivot: PivotSignal | null;
+  /** Per-agent convergence breakdown (only present when MPG data available) */
+  agentBreakdown?: AgentConvergenceStats[];
 }
 
 export interface PivotSignal {
@@ -50,6 +69,19 @@ export interface PivotSignal {
   type: "issue_creation" | "root_cause_request";
   /** Number of fix attempts before the pivot */
   fixAttemptsBefore: number;
+}
+
+export interface AgentConvergenceStats {
+  /** Agent identifier (e.g. "engineer", "pm", "qa") */
+  agent: string;
+  /** Messages routed to this agent */
+  messages: number;
+  /** Errors attributed to this agent */
+  errors: number;
+  /** Error rate as percentage */
+  errorRate: number;
+  /** Convergence penalty from errors (added to effective rate) */
+  convergencePenalty: number;
 }
 
 export interface IntentAnchoringSignal {
@@ -90,6 +122,17 @@ export interface InteractionPatternSignal {
   contextProvision: "structured" | "inline" | "vague";
   /** 1-2 sentence qualitative observation */
   observation: string;
+  /** Handoff pattern data (only present when MPG data available) */
+  handoffs?: HandoffPatternStats;
+}
+
+export interface HandoffPatternStats {
+  /** Total number of agent handoffs in the session */
+  totalHandoffs: number;
+  /** Distinct handoff pairs (e.g. "pm→engineer") with frequency */
+  handoffPairs: Array<{ from: string; to: string; count: number }>;
+  /** "pipeline" = mostly linear (A→B→C), "iterative" = frequent back-and-forth */
+  pattern: "pipeline" | "iterative" | "single-agent";
 }
 
 /** Behavioral event extracted from a user message by LLM */
@@ -161,7 +204,7 @@ export interface DecisionQualitySignal {
 export interface MpgSessionEvent {
   schema_version: number;
   timestamp: string;
-  event_type: "session_start" | "session_end" | "session_idle" | "session_resume" | "message_routed";
+  event_type: "session_start" | "session_end" | "session_idle" | "session_resume" | "message_routed" | "agent_handoff";
   session_id: string;
   project_key: string;
   project_dir: string;
@@ -169,6 +212,22 @@ export interface MpgSessionEvent {
   duration_ms?: number;
   /** Only on message_routed */
   persona?: string;
+  /** Target agent for routed messages or handoffs */
+  agent_target?: string;
+  /** Whether the event resulted in an error */
+  is_error?: boolean;
+  /** Error classification when is_error is true */
+  error_type?: string;
+  /** Source agent for agent_handoff events */
+  agent_source?: string;
+  /** How the message was routed (e.g. "direct", "round-robin", "capability") */
+  routing_method?: string;
+}
+
+/** MPG events correlated to a specific Claude session */
+export interface CorrelatedMpgData {
+  sessionId: string;
+  events: MpgSessionEvent[];
 }
 
 export interface TimeBucket {

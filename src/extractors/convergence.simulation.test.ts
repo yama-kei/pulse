@@ -114,11 +114,7 @@ describe("simulation: timeline chart blind-retry session (mpg #93)", () => {
     assert.equal(result.reworkPercent, 75);
     assert.equal(result.outcomes, 3);
 
-    // 3 consecutive rework messages: "not fixed" -> "doesn't work" -> "got worse"
-    // That's 2 blind retries (rework→rework transitions)
     assert.equal(result.blindRetries, 2);
-
-    // Pivot detected at "investigate the root cause and file an issue"
     assert.ok(result.pivot !== null, "Expected pivot");
     assert.equal(result.pivot!.type, "issue_creation");
     assert.ok(result.pivot!.fixAttemptsBefore >= 2);
@@ -144,7 +140,6 @@ describe("blind-retry detection", () => {
       userMsg("fix the chart"),
       toolUseMsg("Edit", { file_path: "/tmp/a.ts", old_string: "a", new_string: "b" }),
       userMsg("not fixed"),
-      // User asks for diagnosis instead of another blind fix
       userMsg("why is this happening? check the console logs"),
       toolUseMsg("Edit", { file_path: "/tmp/a.ts", old_string: "b", new_string: "c" }),
     ]);
@@ -163,7 +158,6 @@ describe("blind-retry detection", () => {
       userMsg("same issue, no change"),
     ]);
     const result = extractConvergence(session, 0);
-    // rework→rework→rework = 2 blind retries
     assert.equal(result.blindRetries, 2);
   });
 
@@ -172,14 +166,11 @@ describe("blind-retry detection", () => {
       userMsg("fix the bug"),
       toolUseMsg("Edit", { file_path: "/tmp/a.ts", old_string: "a", new_string: "b" }),
       userMsg("still broken"),
-      // Diagnostic interruption
       userMsg("explain why this is failing"),
       toolUseMsg("Edit", { file_path: "/tmp/a.ts", old_string: "b", new_string: "c" }),
       userMsg("still not working"),
     ]);
     const result = extractConvergence(session, 0);
-    // "still broken" → diagnostic → "still not working": chain broken by diagnosis
-    // No consecutive rework→rework after skipping "other" messages
     assert.equal(result.blindRetries, 0);
   });
 });
@@ -202,7 +193,6 @@ describe("pivot detection", () => {
       toolUseMsg("Bash", { command: 'gh issue create --title "new feature"' }),
     ]);
     const result = extractConvergence(session, 0);
-    // No rework before the issue creation — this is proactive, not a pivot
     assert.equal(result.pivot, null);
   });
 
@@ -241,13 +231,10 @@ describe("pivot detection", () => {
       userMsg("fix the bug"),
       toolUseMsg("Edit", { file_path: "/tmp/a.ts", old_string: "a", new_string: "b" }),
       userMsg("not fixed"),
-      // Diagnostic resets the chain
       userMsg("why is this happening? check the error logs"),
-      // Now a new fix attempt after understanding
       userMsg("ok I see, create an issue for the deeper fix"),
     ]);
     const result = extractConvergence(session, 0);
-    // Only 1 fix attempt after diagnostic reset — below threshold of 2
     assert.equal(result.pivot, null);
   });
 });

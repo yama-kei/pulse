@@ -78,7 +78,7 @@ export function extractTrends(reports: PulseReport[]): TrendData[] {
 
   const leverageValues = chrono.map((r) => ({
     date: r.timestamp.slice(0, 10),
-    value: r.interactionLeverage === "HIGH" ? 3 : r.interactionLeverage === "MEDIUM" ? 2 : 1,
+    value: r.leverageScore ?? (r.interactionLeverage === "HIGH" ? 0.85 : r.interactionLeverage === "MEDIUM" ? 0.55 : 0.2),
   }));
   const leverageNums = leverageValues.map((v) => v.value);
 
@@ -142,7 +142,7 @@ function lastNullable(values: (number | null)[]): number | null {
 function formatValue(metric: string, value: number | null): string {
   if (value === null) return "n/a";
   if (metric === "rework") return `${value}%`;
-  if (metric === "leverage") return value === 3 ? "HIGH" : value === 2 ? "MEDIUM" : "LOW";
+  if (metric === "leverage") return value.toFixed(2);
   return value.toFixed(2);
 }
 
@@ -161,9 +161,7 @@ export function formatTrend(trends: TrendData[], reportCount: number, rangeLabel
 
   for (const t of trends) {
     const label = (labels[t.metric] ?? t.metric).padEnd(20);
-    const spark = t.metric === "leverage"
-      ? t.values.map((v) => v.value === 3 ? "HIGH" : v.value === 2 ? "MED" : "LOW").join(" ")
-      : sparkline(t.values.map((v) => v.value), t.hint === "lower is better");
+    const spark = sparkline(t.values.map((v) => v.value), t.hint === "lower is better");
     const first = t.values.length > 0 ? formatValue(t.metric, t.values[0].value) : "n/a";
     const last = formatValue(t.metric, t.current);
     lines.push(`${label}${spark}   ${first} → ${last}  (${t.hint})`);
