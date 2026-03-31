@@ -1,4 +1,4 @@
-import { ConvergenceSignal } from "../types/pulse.js";
+import { ConvergenceSignal, AgentConvergenceStats, CorrelatedMpgData } from "../types/pulse.js";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -29,7 +29,8 @@ export interface SessionTimeWindow {
  */
 export function extractConvergence(
   sessionPath: string | null,
-  filesChanged: number
+  filesChanged: number,
+  mpgData?: CorrelatedMpgData | null
 ): ConvergenceSignal {
   let exchanges = 0;
   let reworkInstances = 0;
@@ -49,7 +50,45 @@ export function extractConvergence(
   const rate = exchanges > 0 ? round(exchanges / outcomes, 2) : 0;
   const reworkPercent = exchanges > 0 ? round((reworkInstances / exchanges) * 100, 1) : 0;
 
-  return { exchanges, outcomes, rate, reworkInstances, reworkPercent, duplicateCommits };
+  const signal: ConvergenceSignal = { exchanges, outcomes, rate, reworkInstances, reworkPercent, duplicateCommits };
+
+  // Enrich with per-agent breakdown when MPG data is available
+  if (mpgData && mpgData.events.length > 0) {
+    signal.agentBreakdown = computeAgentBreakdown(mpgData);
+  }
+
+  return signal;
+}
+
+/**
+ * Compute per-agent convergence stats from correlated MPG events.
+ * Groups message_routed events by agent_target, counts errors,
+ * and computes a convergence penalty based on error rate.
+ */
+export function computeAgentBreakdown(mpgData: CorrelatedMpgData): AgentConvergenceStats[] {
+  const agentMap = new Map<string, { messages: number; errors: number }>();
+
+  for (const event of mpgData.events) {
+    if (event.event_type !== "message_routed") continue;
+    const agent = event.agent_target || event.persona || "unknown";
+    const entry = agentMap.get(agent) || { messages: 0, errors: 0 };
+    entry.messages++;
+    if (event.is_error) entry.errors++;
+    agentMap.set(agent, entry);
+  }
+
+  const stats: AgentConvergenceStats[] = [];
+  for (const [agent, data] of agentMap) {
+    const errorRate = data.messages > 0 ? round((data.errors / data.messages) * 100, 1) : 0;
+    // Each error adds 0.5 exchanges to the effective convergence rate,
+    // treating errors as half-wasted exchanges (they consume effort without producing outcomes).
+    const convergencePenalty = round(data.errors * 0.5, 2);
+    stats.push({ agent, messages: data.messages, errors: data.errors, errorRate, convergencePenalty });
+  }
+
+  // Sort by message count descending
+  stats.sort((a, b) => b.messages - a.messages);
+  return stats;
 }
 
 /**

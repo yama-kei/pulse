@@ -1,4 +1,4 @@
-import { InteractionPatternSignal } from "../types/pulse.js";
+import { InteractionPatternSignal, HandoffPatternStats, CorrelatedMpgData } from "../types/pulse.js";
 import { readFileSync } from "node:fs";
 
 interface SessionMessage {
@@ -67,7 +67,8 @@ const STRUCTURED_PATTERNS = [
  * - A qualitative observation about the interaction
  */
 export function extractInteractionPattern(
-  sessionPath: string | null
+  sessionPath: string | null,
+  mpgData?: CorrelatedMpgData | null
 ): InteractionPatternSignal {
   if (!sessionPath) {
     return {
@@ -90,7 +91,71 @@ export function extractInteractionPattern(
   const contextProvision = classifyContextProvision(messages);
   const observation = generateObservation(messages, userStyle, contextProvision);
 
-  return { userStyle, contextProvision, observation };
+  const signal: InteractionPatternSignal = { userStyle, contextProvision, observation };
+
+  // Enrich with handoff patterns when MPG data is available
+  if (mpgData && mpgData.events.length > 0) {
+    const handoffs = computeHandoffPatterns(mpgData);
+    if (handoffs) signal.handoffs = handoffs;
+  }
+
+  return signal;
+}
+
+/**
+ * Compute handoff frequency and patterns from MPG agent_handoff events.
+ */
+export function computeHandoffPatterns(mpgData: CorrelatedMpgData): HandoffPatternStats | null {
+  const handoffEvents = mpgData.events.filter(e => e.event_type === "agent_handoff");
+  if (handoffEvents.length === 0) return null;
+
+  // Count handoff pairs
+  const pairCounts = new Map<string, { from: string; to: string; count: number }>();
+  for (const event of handoffEvents) {
+    const from = event.agent_source || "unknown";
+    const to = event.agent_target || "unknown";
+    const key = `${from}→${to}`;
+    const existing = pairCounts.get(key);
+    if (existing) {
+      existing.count++;
+    } else {
+      pairCounts.set(key, { from, to, count: 1 });
+    }
+  }
+
+  const handoffPairs = Array.from(pairCounts.values()).sort((a, b) => b.count - a.count);
+
+  // Classify pattern
+  const pattern = classifyHandoffPattern(handoffPairs);
+
+  return {
+    totalHandoffs: handoffEvents.length,
+    handoffPairs,
+    pattern,
+  };
+}
+
+/**
+ * Classify handoff pattern:
+ * - "single-agent": no handoffs
+ * - "pipeline": mostly linear flow (few unique reverse pairs)
+ * - "iterative": frequent back-and-forth between agents
+ */
+function classifyHandoffPattern(
+  pairs: Array<{ from: string; to: string; count: number }>
+): "pipeline" | "iterative" | "single-agent" {
+  if (pairs.length === 0) return "single-agent";
+
+  // Check for reverse pairs (A→B and B→A both exist)
+  const pairKeys = new Set(pairs.map(p => `${p.from}→${p.to}`));
+  let reversePairCount = 0;
+  for (const p of pairs) {
+    if (pairKeys.has(`${p.to}→${p.from}`)) reversePairCount++;
+  }
+
+  // If >50% of pairs have a reverse, it's iterative
+  if (reversePairCount > pairs.length * 0.5) return "iterative";
+  return "pipeline";
 }
 
 function readUserMessages(sessionPath: string): string[] {
