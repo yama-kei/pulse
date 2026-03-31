@@ -12,6 +12,20 @@ export interface PulseReport {
   leverageScore: number;
 }
 
+export interface AgentReport {
+  role: string;
+  sessionPath: string;
+  report: PulseReport;
+}
+
+export interface ThreadPulseReport {
+  timestamp: string;
+  worktreeId: string;
+  project: string;
+  agents: AgentReport[];
+  aggregate: PulseReport;
+}
+
 export interface TokenUsageSignal {
   /** Total input tokens across session */
   inputTokens: number;

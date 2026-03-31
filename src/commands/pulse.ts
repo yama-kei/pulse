@@ -1,4 +1,4 @@
-import { PulseReport } from "../types/pulse.js";
+import { PulseReport, AgentReport, ThreadPulseReport } from "../types/pulse.js";
 import { extractConvergence, findSessionFile, extractSessionTimeWindow, SessionTimeWindow } from "../extractors/convergence.js";
 import { extractIntentAnchoring } from "../extractors/intent-anchoring.js";
 import { extractDecisionQuality } from "../extractors/decision-quality.js";
@@ -300,6 +300,182 @@ export function loadHistoricalScores(cwd: string, currentTimestamp: string): His
   } catch {
     return null;
   }
+}
+
+export async function runThreadPulse(worktreeId: string): Promise<ThreadPulseReport | string> {
+  const { discoverThreads } = await import("./sessions.js");
+  const groups = discoverThreads({ range: "30d" });
+  const thread = groups.find((g) => g.worktreeId === worktreeId);
+  if (!thread) {
+    return `Thread ${worktreeId} not found. Run \`pulse sessions\` to see available threads.`;
+  }
+
+  if (thread.sessions.length === 0) {
+    return `Thread ${worktreeId} has no sessions.`;
+  }
+
+  const agents: AgentReport[] = [];
+  for (const session of thread.sessions) {
+    const report = await runPulse(process.cwd(), session.filePath);
+    agents.push({ role: session.role, sessionPath: session.filePath, report });
+  }
+
+  const aggregate = aggregateReports(agents.map((a) => a.report), thread.project);
+
+  return {
+    timestamp: new Date().toISOString(),
+    worktreeId,
+    project: thread.project,
+    agents,
+    aggregate,
+  };
+}
+
+export function aggregateReports(reports: PulseReport[], project: string): PulseReport {
+  // Convergence: sum exchanges, outcomes, rework; recalculate rate
+  const totalExchanges = reports.reduce((s, r) => s + r.convergence.exchanges, 0);
+  const totalOutcomes = reports.reduce((s, r) => s + r.convergence.outcomes, 0);
+  const totalRework = reports.reduce((s, r) => s + r.convergence.reworkInstances, 0);
+  const totalDuplicateCommits = reports.reduce((s, r) => s + r.convergence.duplicateCommits, 0);
+  const rate = totalOutcomes > 0 ? Math.round((totalExchanges / totalOutcomes) * 100) / 100 : 0;
+  const reworkPercent = totalExchanges > 0 ? Math.round((totalRework / totalExchanges) * 100) : 0;
+
+  const convergence = {
+    exchanges: totalExchanges,
+    outcomes: totalOutcomes,
+    rate,
+    reworkInstances: totalRework,
+    reworkPercent,
+    duplicateCommits: totalDuplicateCommits,
+  };
+
+  // Tokens: sum all, recalculate ratios
+  const totalInput = reports.reduce((s, r) => s + r.tokenUsage.inputTokens, 0);
+  const totalOutput = reports.reduce((s, r) => s + r.tokenUsage.outputTokens, 0);
+  const totalTokens = totalInput + totalOutput;
+  const anyTokensAvailable = reports.some((r) => r.tokenUsage.available);
+  const tokenUsage = {
+    inputTokens: totalInput,
+    outputTokens: totalOutput,
+    totalTokens,
+    tokensPerExchange: totalExchanges > 0 ? Math.round(totalTokens / totalExchanges) : 0,
+    tokensPerOutcome: totalOutcomes > 0 ? Math.round(totalTokens / totalOutcomes) : 0,
+    available: anyTokensAvailable,
+  };
+
+  // Decision quality: union commit messages (dedup), recalculate totals
+  const allMessages = [...new Set(reports.flatMap((r) => r.decisionQuality.commitMessages))];
+  const whyPattern = /\b(because|so that|to prevent|to avoid|to ensure|in order to|this fixes|this resolves)\b/i;
+  const issueRefPattern = /#\d+/;
+  const commitsWithWhy = allMessages.filter((m) => whyPattern.test(m)).length;
+  const commitsWithIssueRef = allMessages.filter((m) => issueRefPattern.test(m)).length;
+  const externalContextProvided = reports.some((r) => r.decisionQuality.externalContextProvided);
+  const decisionQuality = {
+    commitsTotal: allMessages.length,
+    commitsWithWhy,
+    commitsWithIssueRef,
+    externalContextProvided,
+    commitMessages: allMessages,
+  };
+
+  // Prompt effectiveness: average scores across available sessions
+  const peReports = reports.filter((r) => r.promptEffectiveness.available);
+  let promptEffectiveness: PulseReport["promptEffectiveness"];
+  if (peReports.length > 0) {
+    const dims = ["contextProvision", "scopeDiscipline", "feedbackQuality", "decomposition", "verification"] as const;
+    const scores: Record<string, number> = {};
+    for (const dim of dims) {
+      scores[dim] = Math.round((peReports.reduce((s, r) => s + r.promptEffectiveness.scores[dim], 0) / peReports.length) * 100) / 100;
+    }
+    const overallScore = Math.round((peReports.reduce((s, r) => s + r.promptEffectiveness.overallScore, 0) / peReports.length) * 100) / 100;
+    promptEffectiveness = {
+      available: true,
+      events: peReports.flatMap((r) => r.promptEffectiveness.events),
+      scores: scores as unknown as PulseReport["promptEffectiveness"]["scores"],
+      overallScore,
+      rating: overallScore >= 0.8 ? "excellent" : overallScore >= 0.6 ? "good" : overallScore >= 0.4 ? "moderate" : "developing",
+      observation: `Aggregated from ${peReports.length} session(s)`,
+      coaching: [...new Set(peReports.flatMap((r) => r.promptEffectiveness.coaching))],
+    };
+  } else {
+    promptEffectiveness = {
+      available: false,
+      events: [],
+      scores: { contextProvision: 0, scopeDiscipline: 0, feedbackQuality: 0, decomposition: 0, verification: 0 },
+      overallScore: 0,
+      rating: "developing",
+      observation: "",
+      coaching: [],
+    };
+  }
+
+  // Interaction pattern: take from "main" role, or first session
+  const mainReport = reports[0];
+  const interactionPattern = mainReport?.interactionPattern ?? {
+    userStyle: "directive" as const,
+    contextProvision: "structured" as const,
+    observation: "",
+  };
+
+  // Intent anchoring: take from first report (all sessions share the same project)
+  const intentAnchoring = mainReport?.intentAnchoring ?? {
+    intentsPresent: false,
+    claudeMdPresent: false,
+    declaredIntents: [],
+    relevantIntents: [],
+    referencedIntents: [],
+    gap: [],
+    intentLayerCheck: null,
+  };
+
+  // Leverage: compute from aggregate convergence + decision quality
+  const { score: leverageScore, label: interactionLeverage } = computeLeverage(convergence, decisionQuality);
+
+  return {
+    timestamp: new Date().toISOString(),
+    project,
+    cwd: mainReport?.cwd ?? "",
+    convergence,
+    intentAnchoring,
+    decisionQuality,
+    tokenUsage,
+    interactionPattern,
+    promptEffectiveness,
+    interactionLeverage,
+    leverageScore,
+  };
+}
+
+export function formatThreadReport(threadReport: ThreadPulseReport): string {
+  const lines: string[] = [];
+  lines.push(`Pulse — Thread ${threadReport.worktreeId} (${threadReport.project})`);
+  lines.push("═".repeat(60));
+  lines.push(`${threadReport.timestamp} | ${threadReport.agents.length} agent(s)`);
+  lines.push("");
+
+  // Per-agent breakdown
+  lines.push("AGENT BREAKDOWN");
+  const header = "  " + "Role".padEnd(12) + "Exch".padStart(6) + "Out".padStart(6) + "Rate".padStart(7) + "Rework".padStart(8) + "Leverage".padStart(10);
+  lines.push(header);
+  lines.push("  " + "─".repeat(header.length - 2));
+
+  for (const agent of threadReport.agents) {
+    const r = agent.report;
+    const role = agent.role.padEnd(12);
+    const exch = String(r.convergence.exchanges).padStart(6);
+    const out = String(r.convergence.outcomes).padStart(6);
+    const rate = r.convergence.rate.toFixed(2).padStart(7);
+    const rework = `${r.convergence.reworkPercent}%`.padStart(8);
+    const leverage = `${r.leverageScore.toFixed(2)}`.padStart(10);
+    lines.push(`  ${role}${exch}${out}${rate}${rework}${leverage}`);
+  }
+  lines.push("");
+
+  // Aggregate report
+  lines.push("AGGREGATE");
+  lines.push(formatReport(threadReport.aggregate));
+
+  return lines.join("\n");
 }
 
 export function formatDelta(current: number, avg: number): string {
