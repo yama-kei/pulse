@@ -1,4 +1,4 @@
-import { runPulse, formatReport, savePulse } from "./commands/pulse.js";
+import { runPulse, formatReport, savePulse, runThreadPulse, formatThreadReport } from "./commands/pulse.js";
 import { runActivity } from "./commands/activity.js";
 import { runHistory } from "./commands/history.js";
 import { runTrend } from "./commands/trend.js";
@@ -55,6 +55,31 @@ function main(): void {
 async function run(): Promise<void> {
   const runArgs = isImplicitRun ? args : args.slice(1);
   const sessionPath = flagValue(runArgs, "--session");
+  const threadId = flagValue(runArgs, "--thread");
+
+  if (args.includes("--no-llm")) {
+    delete process.env.OPENAI_API_KEY;
+  }
+
+  // Thread mode: aggregate multi-session analysis
+  if (threadId) {
+    const result = await runThreadPulse(threadId);
+    if (typeof result === "string") {
+      console.error(result);
+      process.exit(1);
+    }
+    if (args.includes("--json")) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    console.log(formatThreadReport(result));
+    if (!args.includes("--no-save")) {
+      const saved = savePulse(process.cwd(), result.aggregate);
+      console.log(`\nSaved aggregate to ${saved}`);
+    }
+    return;
+  }
+
   const projectDir = resolve(
     runArgs.find((a) => !a.startsWith("--") && a !== sessionPath) ||
       process.cwd()
@@ -67,10 +92,6 @@ async function run(): Promise<void> {
       console.error(`Session file not found: ${resolved}`);
       process.exit(1);
     }
-  }
-
-  if (args.includes("--no-llm")) {
-    delete process.env.OPENAI_API_KEY;
   }
 
   const report = await runPulse(
@@ -140,6 +161,7 @@ Usage:
 
 Flags (run):
   --session <path>       Analyze a specific session JSONL file
+  --thread <id>          Aggregate multi-session analysis for a worktree thread
   --json                 Also output raw JSON
   --no-save              Don't save pulse report to .pulse/
   --no-llm               Skip LLM-powered evaluations (prompt effectiveness)
