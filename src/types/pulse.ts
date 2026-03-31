@@ -192,6 +192,8 @@ export interface MpgSessionEvent {
   error_type?: string;
   /** Source agent for agent_handoff events */
   agent_source?: string;
+  /** How the message was routed (e.g. "direct", "round-robin", "capability") */
+  routing_method?: string;
 }
 
 /** MPG events correlated to a specific Claude session */

@@ -80,7 +80,8 @@ export function computeAgentBreakdown(mpgData: CorrelatedMpgData): AgentConverge
   const stats: AgentConvergenceStats[] = [];
   for (const [agent, data] of agentMap) {
     const errorRate = data.messages > 0 ? round((data.errors / data.messages) * 100, 1) : 0;
-    // Convergence penalty: each error adds 0.5 to the effective convergence rate
+    // Each error adds 0.5 exchanges to the effective convergence rate,
+    // treating errors as half-wasted exchanges (they consume effort without producing outcomes).
     const convergencePenalty = round(data.errors * 0.5, 2);
     stats.push({ agent, messages: data.messages, errors: data.errors, errorRate, convergencePenalty });
   }
