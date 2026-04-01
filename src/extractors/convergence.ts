@@ -73,11 +73,19 @@ export function extractConvergence(
  * and computes a convergence penalty based on error rate.
  */
 export function computeAgentBreakdown(mpgData: CorrelatedMpgData): AgentConvergenceStats[] {
+  // Build session_id → agent_name lookup from session_start events
+  const sessionAgentMap = new Map<string, string>();
+  for (const event of mpgData.events) {
+    if (event.event_type === "session_start" && event.agent_name) {
+      sessionAgentMap.set(event.session_id, event.agent_name);
+    }
+  }
+
   const agentMap = new Map<string, { messages: number; errors: number }>();
 
   for (const event of mpgData.events) {
     if (event.event_type !== "message_routed") continue;
-    const agent = event.agent_target || event.persona || "unknown";
+    const agent = event.agent_target || event.persona || sessionAgentMap.get(event.session_id) || "unknown";
     const entry = agentMap.get(agent) || { messages: 0, errors: 0 };
     entry.messages++;
     if (event.is_error) entry.errors++;

@@ -208,8 +208,12 @@ export interface MpgSessionEvent {
   session_id: string;
   project_key: string;
   project_dir: string;
+  /** Thread ID for correlating handoffs across sessions */
+  thread_id?: string;
   /** Only on session_end */
   duration_ms?: number;
+  /** Agent name, present on session_start */
+  agent_name?: string;
   /** Only on message_routed */
   persona?: string;
   /** Target agent for routed messages or handoffs */
@@ -220,6 +224,10 @@ export interface MpgSessionEvent {
   error_type?: string;
   /** Source agent for agent_handoff events */
   agent_source?: string;
+  /** Source agent for agent_handoff events (new MPG field) */
+  from_agent?: string;
+  /** Target agent for agent_handoff events (new MPG field) */
+  to_agent?: string;
   /** How the message was routed (e.g. "direct", "round-robin", "capability") */
   routing_method?: string;
 }
