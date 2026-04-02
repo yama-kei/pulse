@@ -6,6 +6,7 @@ export interface PulseReport {
   intentAnchoring: IntentAnchoringSignal;
   decisionQuality: DecisionQualitySignal;
   tokenUsage: TokenUsageSignal;
+  decisionEvents: DecisionEventsSignal;
   interactionPattern: InteractionPatternSignal;
   promptEffectiveness: PromptEffectivenessSignal;
   interactionLeverage: "HIGH" | "MEDIUM" | "LOW";
@@ -197,6 +198,32 @@ export interface DecisionQualitySignal {
   externalContextProvided: boolean;
   /** Commit messages from the session */
   commitMessages: string[];
+}
+
+// ── Decision event types (issue #52, Phase 1) ───────────────
+
+export type DecisionEventType =
+  | 'implementation_decided'
+  | 'root_cause_identified'
+  | 'schema_locked'
+  | 'contract_finalized'
+  | 'feature_shipped'
+  | 'bug_resolved'
+  | 'design_chosen';
+
+export interface DecisionEvent {
+  type: DecisionEventType;
+  timestamp: string;
+  confidence: 'high' | 'medium' | 'low';
+  relatedFiles: string[];
+  tokensCost: number;
+}
+
+export interface DecisionEventsSignal {
+  events: DecisionEvent[];
+  decisionCount: number;
+  tokensPerDecision: number;
+  available: boolean;
 }
 
 // ── Activity event types (issue #10) ──────────────────────────
