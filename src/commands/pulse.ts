@@ -321,6 +321,15 @@ function generateNudges(report: PulseReport): string[] {
     }
   }
 
+  // Decision event nudges
+  const de = report.decisionEvents;
+  if (de.available && de.decisionCount === 0 && tu.available && tu.totalTokens > 10000) {
+    nudges.push("No decision events detected despite significant token usage. Consider breaking work into smaller, committable increments.");
+  }
+  if (de.available && de.tokensPerDecision > 50000) {
+    nudges.push(`${de.tokensPerDecision.toLocaleString()} tokens per decision is high. More frequent commits and smaller scope can improve decision yield.`);
+  }
+
   return nudges;
 }
 
