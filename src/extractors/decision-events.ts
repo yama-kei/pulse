@@ -208,27 +208,29 @@ function detectEvents(timeline: FileTouch[]): DecisionEvent[] {
     }
   }
 
-  // Pass 2: schema_locked — files edited early, untouched in second half
+  // Pass 2: schema_locked — files written (created) early, untouched in second half
+  // Only tracks "write" (new file creation) not "edit" (modification), since schema files
+  // are typically created once then treated as frozen while implementation continues.
   const midpoint = Math.floor(timeline.length / 2);
   if (midpoint > 0) {
-    const editedFirstHalf = new Set<string>();
+    const writtenFirstHalf = new Set<string>();
     const touchedSecondHalf = new Set<string>();
 
     for (let i = 0; i < midpoint; i++) {
       const t = timeline[i];
-      if (t.action === "edit" || t.action === "write") editedFirstHalf.add(t.file);
+      if (t.action === "write") writtenFirstHalf.add(t.file);
     }
     for (let i = midpoint; i < timeline.length; i++) {
       const t = timeline[i];
       if (t.action === "edit" || t.action === "write" || t.action === "read") touchedSecondHalf.add(t.file);
     }
 
-    for (const file of editedFirstHalf) {
+    for (const file of writtenFirstHalf) {
       if (!touchedSecondHalf.has(file)) {
-        // Find the last edit of this file
+        // Find the last write of this file
         let lastEditIdx = -1;
         for (let i = midpoint - 1; i >= 0; i--) {
-          if ((timeline[i].action === "edit" || timeline[i].action === "write") && timeline[i].file === file) {
+          if (timeline[i].action === "write" && timeline[i].file === file) {
             lastEditIdx = i;
             break;
           }

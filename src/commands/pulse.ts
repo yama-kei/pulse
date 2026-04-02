@@ -1,8 +1,9 @@
-import { PulseReport, AgentReport, ThreadPulseReport } from "../types/pulse.js";
+import { PulseReport, AgentReport, ThreadPulseReport, DecisionEventsSignal } from "../types/pulse.js";
 import { extractConvergence, findSessionFile, extractSessionTimeWindow, SessionTimeWindow } from "../extractors/convergence.js";
 import { extractIntentAnchoring } from "../extractors/intent-anchoring.js";
 import { extractDecisionQuality } from "../extractors/decision-quality.js";
 import { extractTokenUsage } from "../extractors/token-usage.js";
+import { extractDecisionEvents } from "../extractors/decision-events.js";
 import { extractInteractionPattern } from "../extractors/interaction-pattern.js";
 import { extractPromptEffectiveness } from "../extractors/prompt-effectiveness.js";
 import { correlateMpgEvents } from "../activity/mpg-correlator.js";
@@ -21,6 +22,7 @@ export async function runPulse(projectDir: string, sessionPath?: string): Promis
   const decisionQuality = extractDecisionQuality(projectDir);
   const intentAnchoring = extractIntentAnchoring(projectDir, decisionQuality.commitMessages);
   const tokenUsage = extractTokenUsage(sessionFile, convergence.exchanges, convergence.outcomes);
+  const decisionEvents = extractDecisionEvents(sessionFile, tokenUsage.totalTokens);
   const interactionPattern = extractInteractionPattern(sessionFile, mpgData);
   const promptEffectiveness = await extractPromptEffectiveness(sessionFile);
   const { score: leverageScore, label: interactionLeverage } = computeLeverage(convergence, decisionQuality);
@@ -33,6 +35,7 @@ export async function runPulse(projectDir: string, sessionPath?: string): Promis
     intentAnchoring,
     decisionQuality,
     tokenUsage,
+    decisionEvents,
     interactionPattern,
     promptEffectiveness,
     interactionLeverage,
@@ -103,6 +106,23 @@ export function formatReport(report: PulseReport): string {
     lines.push("TOKEN CORRELATION");
     lines.push(`  Tokens per exchange:   ${tu.tokensPerExchange.toLocaleString()}`);
     lines.push(`  Tokens per outcome:    ${tu.tokensPerOutcome.toLocaleString()}`);
+    lines.push("");
+  }
+
+  // Decision Events
+  const de = report.decisionEvents;
+  if (de.available) {
+    lines.push("DECISION EVENTS");
+    lines.push(`  Decisions detected:    ${de.decisionCount}`);
+    if (de.tokensPerDecision > 0) {
+      lines.push(`  Tokens per decision:   ${de.tokensPerDecision.toLocaleString()}`);
+    }
+    if (de.events.length > 0) {
+      for (const event of de.events) {
+        const files = event.relatedFiles.length > 0 ? ` (${event.relatedFiles.join(", ")})` : "";
+        lines.push(`    ${event.type} [${event.confidence}]${files}`);
+      }
+    }
     lines.push("");
   }
 
@@ -404,6 +424,17 @@ export function aggregateReports(reports: PulseReport[], project: string): Pulse
     available: anyTokensAvailable,
   };
 
+  // Decision events: merge all events, recalculate totals
+  const allDecisionEvents = reports.flatMap(r => r.decisionEvents?.events ?? []);
+  const anyDecisionEventsAvailable = reports.some(r => r.decisionEvents?.available);
+  const totalDecisionCount = allDecisionEvents.length;
+  const decisionEvents: DecisionEventsSignal = {
+    events: allDecisionEvents.sort((a, b) => a.timestamp.localeCompare(b.timestamp)),
+    decisionCount: totalDecisionCount,
+    tokensPerDecision: totalDecisionCount > 0 ? Math.round(totalTokens / totalDecisionCount) : 0,
+    available: anyDecisionEventsAvailable,
+  };
+
   // Decision quality: union commit messages (dedup), recalculate totals
   const allMessages = [...new Set(reports.flatMap((r) => r.decisionQuality.commitMessages))];
   const whyPattern = /\b(because|so that|to prevent|to avoid|to ensure|in order to|this fixes|this resolves)\b/i;
@@ -480,6 +511,7 @@ export function aggregateReports(reports: PulseReport[], project: string): Pulse
     intentAnchoring,
     decisionQuality,
     tokenUsage,
+    decisionEvents,
     interactionPattern,
     promptEffectiveness,
     interactionLeverage,
