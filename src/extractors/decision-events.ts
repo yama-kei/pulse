@@ -52,7 +52,7 @@ export function extractDecisionEvents(
     events,
     decisionCount,
     tokensPerDecision,
-    available: true,
+    available: decisionCount > 0,
   };
 }
 
@@ -135,7 +135,7 @@ function detectEvents(timeline: FileTouch[]): DecisionEvent[] {
   // Rule 2: bug_resolved — fix: commit + issue ref
   // Rule 3: root_cause_identified — exploration → fix: commit
   // Rule 4: implementation_decided — reads/edits → commit (no rework)
-  // Rule 5: schema_locked — file edited then untouched for rest of session
+  // Rule 5: schema_locked — file created (Write) then untouched for rest of session
   // Rule 6: design_chosen — reads across multiple files → single path committed
 
   const usedCommits = new Set<number>();
