@@ -1,4 +1,4 @@
-import { ConvergenceSignal, PivotSignal, AgentConvergenceStats, CorrelatedMpgData } from "../types/pulse.js";
+import { ConvergenceSignal, PivotSignal, AgentConvergenceStats, CorrelatedMpgData, DecisionEvent } from "../types/pulse.js";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -38,6 +38,7 @@ export function extractConvergence(
   let duplicateCommits = 0;
   let blindRetries = 0;
   let pivot: PivotSignal | null = null;
+  let decisionEvents: DecisionEvent[] = [];
 
   if (sessionPath) {
     const parsed = parseSessionMessages(sessionPath);
@@ -47,6 +48,7 @@ export function extractConvergence(
     duplicateCommits = parsed.duplicateCommits;
     blindRetries = parsed.blindRetries;
     pivot = parsed.pivot;
+    decisionEvents = parsed.decisionEvents;
   }
 
   // Outcomes: max of session-derived outcomes and git filesChanged. Floor at 1 to avoid division by zero.
@@ -64,6 +66,11 @@ export function extractConvergence(
     signal.agentBreakdown = computeAgentBreakdown(mpgData);
   }
 
+  // Attach decision events when detected
+  if (decisionEvents.length > 0) {
+    signal.decisionEvents = decisionEvents;
+  }
+
   return signal;
 }
 
@@ -77,7 +84,7 @@ export function computeAgentBreakdown(mpgData: CorrelatedMpgData): AgentConverge
 
   for (const event of mpgData.events) {
     if (event.event_type !== "message_routed") continue;
-    const agent = event.agent_target || event.persona || "unknown";
+    const agent = event.agent_target || event.persona || agentFromContext(event);
     const entry = agentMap.get(agent) || { messages: 0, errors: 0 };
     entry.messages++;
     if (event.is_error) entry.errors++;
@@ -234,10 +241,62 @@ const ROOT_CAUSE_REQUEST_PATTERNS = [
   /\bwhy (?:is|does|did) (?:this|it)\b/i,
 ];
 
+// ── Decision event detection patterns (#55) ──────────────────────────
+
+/** Option selection: user picks from alternatives ("1", "a", "B", "option 2") */
+const OPTION_SELECTION_PATTERNS = [
+  /^[1-9]$/,                             // bare digit
+  /^[a-cA-C]$/,                          // bare letter option (a/b/c)
+  /^(?:option|choice|go with|pick)\s*[1-9a-c]\b/i,
+  /^(?:the )?(?:first|second|third|last) (?:one|option|approach|plan)\b/i,
+];
+
+/** Scope decision: user narrows or excludes scope */
+const SCOPE_DECISION_PATTERNS = [
+  /\b(?:do not|don'?t|won'?t|will not|no need to) (?:plan|add|support|implement|include|build|create)\b/i,
+  /\bskip\s+(?:that|this|the|it)\b/i,
+  /\bout of scope\b/i,
+  /\bnot (?:needed|necessary|required|planned)\b/i,
+  /\bwe (?:do not|don'?t) (?:plan|need|want) to\b/i,
+  /\bdrop\s+(?:that|this|the|it)\b/i,
+  /\bremove\s+(?:that|this|the) (?:feature|requirement|support)\b/i,
+];
+
+/** Delegation: user directs work to an agent or process */
+const DELEGATION_PATTERNS = [
+  /\bhand\s*(?:off|it over)\b/i,
+  /\bcan you (?:run|execute|do|handle|take care of|proceed|start|fix)\b/i,
+  /\bplease (?:run|execute|do|handle|proceed|start|fix)\b/i,
+  /\bgo ahead\b/i,
+  /\bproceed\b/i,
+];
+
+/** Approval: user accepts work */
+const APPROVAL_PATTERNS = [
+  /\blooks? good\b/i,
+  /\blgtm\b/i,
+  /\bapproved?\b/i,
+  /^(?:merge|commit|ship|deploy|push)(?:\s+(?:it|this|that|the PR|pr))?\.?$/im,
+  /\bmerge (?:it|this|that|the )?(?:PR|pr|pull request)\b/i,
+  /\bmerge directly\b/i,
+  /\byes[,.]?\s*(?:do it|go ahead|proceed|that'?s? (?:right|correct|fine|good))/i,
+  /^(?:yes|yep|yeah|correct|right|exactly)\.?$/im,
+];
+
+/** Rejection: user explicitly rejects a proposal */
+const REJECTION_PATTERNS = [
+  /\bdon'?t (?:do|use|go with) (?:that|this|it)\b/i,
+  /\bno[,.]?\s*(?:that'?s? (?:not|wrong)|don'?t|skip|not that)/i,
+  /\breject(?:ed)?\b/i,
+  /\bnot (?:that|this) (?:one|approach|option|way)\b/i,
+];
+
 const GIT_COMMIT_RE = /\bgit\s+commit\b/;
 const GH_PR_CREATE_RE = /\bgh\s+pr\s+create\b/;
 const GH_ISSUE_CREATE_RE = /\bgh\s+issue\s+create\b/;
 const COMMIT_MSG_RE = /-m\s+(?:"([^"]*?)"|'([^']*?)')/;
+/** Heredoc-style: git commit -m "$(cat <<'EOF'\n...\nEOF\n)" */
+const HEREDOC_MSG_RE = /cat\s+<<'?EOF'?\n([\s\S]*?)\nEOF/;
 const ISSUE_REF_RE = /#(\d+)/g;
 
 function parseSessionMessages(sessionPath: string): {
@@ -247,6 +306,7 @@ function parseSessionMessages(sessionPath: string): {
   duplicateCommits: number;
   blindRetries: number;
   pivot: PivotSignal | null;
+  decisionEvents: DecisionEvent[];
 } {
   let exchanges = 0;
   let reworkInstances = 0;
@@ -259,6 +319,7 @@ function parseSessionMessages(sessionPath: string): {
 
   // Track message flow for blind-retry and pivot detection
   const messageClasses: Array<"rework" | "diagnostic" | "pivot_issue" | "pivot_rootcause" | "other"> = [];
+  const decisionEvents: DecisionEvent[] = [];
   let agentActedSinceLastUser = false;
 
   try {
@@ -297,6 +358,25 @@ function parseSessionMessages(sessionPath: string): {
             messageClasses.push("other");
           }
 
+          // Decision event detection (#55)
+          const exchangeIdx = exchanges - 1;
+          const trimmed = text.trim();
+          if (OPTION_SELECTION_PATTERNS.some(p => p.test(trimmed))) {
+            decisionEvents.push({ atExchange: exchangeIdx, type: "option_selected", detail: `selected "${trimmed}"` });
+          }
+          if (SCOPE_DECISION_PATTERNS.some(p => p.test(text))) {
+            decisionEvents.push({ atExchange: exchangeIdx, type: "scope_decided", detail: text.slice(0, 80) });
+          }
+          if (DELEGATION_PATTERNS.some(p => p.test(text))) {
+            decisionEvents.push({ atExchange: exchangeIdx, type: "delegated", detail: text.slice(0, 80) });
+          }
+          if (APPROVAL_PATTERNS.some(p => p.test(trimmed))) {
+            decisionEvents.push({ atExchange: exchangeIdx, type: "approved", detail: trimmed.slice(0, 80) });
+          }
+          if (REJECTION_PATTERNS.some(p => p.test(text))) {
+            decisionEvents.push({ atExchange: exchangeIdx, type: "rejected", detail: text.slice(0, 80) });
+          }
+
           agentActedSinceLastUser = false;
         } else if (msg.type === "assistant") {
           const blocks = msg.message?.content;
@@ -316,7 +396,8 @@ function parseSessionMessages(sessionPath: string): {
               if (GIT_COMMIT_RE.test(cmd)) {
                 // Deduplicate commits by issue ref
                 const msgMatch = cmd.match(COMMIT_MSG_RE);
-                const commitMsg = msgMatch ? (msgMatch[1] ?? msgMatch[2] ?? "") : "";
+                const heredocMatch = !msgMatch ? cmd.match(HEREDOC_MSG_RE) : null;
+                const commitMsg = msgMatch ? (msgMatch[1] ?? msgMatch[2] ?? "") : (heredocMatch ? heredocMatch[1] : "");
                 const refs: string[] = [];
                 let refMatch: RegExpExecArray | null;
                 const issueRe = new RegExp(ISSUE_REF_RE.source, "g");
@@ -354,7 +435,7 @@ function parseSessionMessages(sessionPath: string): {
   const blindRetries = detectBlindRetries(messageClasses);
   const pivot = detectPivot(messageClasses);
 
-  return { exchanges, reworkInstances, outcomes, duplicateCommits, blindRetries, pivot };
+  return { exchanges, reworkInstances, outcomes, duplicateCommits, blindRetries, pivot, decisionEvents };
 }
 
 /**
@@ -431,6 +512,26 @@ function isSystemMessage(text: string): boolean {
     text.startsWith("Base directory for this skill:") ||
     text.includes("/.claude/plugins/")
   );
+}
+
+/**
+ * Derive agent name from MPG event context when agent_target and persona are unset.
+ * Checks session_id ("worktreeId:role") and project_dir suffix ("-role").
+ */
+function agentFromContext(event: { session_id: string; project_dir: string }): string {
+  // session_id format: "1490459966765793411:pm" → "pm"
+  const colonIdx = event.session_id.indexOf(":");
+  if (colonIdx > 0) {
+    return event.session_id.slice(colonIdx + 1);
+  }
+  // project_dir format: ".../worktrees/1490459966765793411-pm" → "pm"
+  const dirMatch = event.project_dir.match(/-(\w[\w-]*)$/);
+  if (dirMatch) {
+    // Exclude numeric-only suffixes (worktree IDs)
+    const candidate = dirMatch[1];
+    if (!/^\d+$/.test(candidate)) return candidate;
+  }
+  return "main";
 }
 
 function round(n: number, decimals: number): number {

@@ -436,4 +436,190 @@ describe("MPG enrichment — per-agent convergence", () => {
     const breakdown = computeAgentBreakdown(mpgData);
     assert.equal(breakdown[0].agent, "reviewer");
   });
+
+  it("derives agent name from session_id colon format", () => {
+    const mpgData: CorrelatedMpgData = {
+      sessionId: "test",
+      events: [
+        makeMpgEvent({ agent_target: undefined, persona: undefined, session_id: "1490459:pm" }),
+      ],
+    };
+    const breakdown = computeAgentBreakdown(mpgData);
+    assert.equal(breakdown[0].agent, "pm");
+  });
+
+  it("derives agent name from project_dir suffix", () => {
+    const mpgData: CorrelatedMpgData = {
+      sessionId: "test",
+      events: [
+        makeMpgEvent({ agent_target: undefined, persona: undefined, session_id: "some-uuid", project_dir: "/home/user/proj/.worktrees/123-engineer" }),
+      ],
+    };
+    const breakdown = computeAgentBreakdown(mpgData);
+    assert.equal(breakdown[0].agent, "engineer");
+  });
+
+  it("falls back to 'main' when no agent info available", () => {
+    const mpgData: CorrelatedMpgData = {
+      sessionId: "test",
+      events: [
+        makeMpgEvent({ agent_target: undefined, persona: undefined, session_id: "some-uuid", project_dir: "/home/user/proj/.worktrees/14904599" }),
+      ],
+    };
+    const breakdown = computeAgentBreakdown(mpgData);
+    assert.equal(breakdown[0].agent, "main");
+  });
+});
+
+describe("decision event detection", () => {
+  it("detects option selection from bare digit", () => {
+    const session = createSessionFile([
+      { type: "user", content: "1" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.ok(result.decisionEvents);
+    assert.equal(result.decisionEvents!.length, 1);
+    assert.equal(result.decisionEvents![0].type, "option_selected");
+  });
+
+  it("detects option selection from bare letter", () => {
+    const session = createSessionFile([
+      { type: "user", content: "B" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.ok(result.decisionEvents);
+    assert.equal(result.decisionEvents![0].type, "option_selected");
+  });
+
+  it("detects 'the first option' as option selection", () => {
+    const session = createSessionFile([
+      { type: "user", content: "the first one" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.ok(result.decisionEvents);
+    assert.equal(result.decisionEvents![0].type, "option_selected");
+  });
+
+  it("detects scope decision language", () => {
+    const session = createSessionFile([
+      { type: "user", content: "We do not plan to add support for voice-samples.md" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.ok(result.decisionEvents);
+    assert.equal(result.decisionEvents![0].type, "scope_decided");
+  });
+
+  it("detects 'skip that' as scope decision", () => {
+    const session = createSessionFile([
+      { type: "user", content: "skip that for now" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.ok(result.decisionEvents);
+    assert.equal(result.decisionEvents![0].type, "scope_decided");
+  });
+
+  it("detects delegation patterns", () => {
+    const session = createSessionFile([
+      { type: "user", content: "Can you run the extraction pipeline?" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.ok(result.decisionEvents);
+    assert.equal(result.decisionEvents![0].type, "delegated");
+  });
+
+  it("detects 'proceed' as delegation", () => {
+    const session = createSessionFile([
+      { type: "user", content: "proceed" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.ok(result.decisionEvents);
+    assert.equal(result.decisionEvents![0].type, "delegated");
+  });
+
+  it("detects approval patterns", () => {
+    const session = createSessionFile([
+      { type: "user", content: "looks good" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.ok(result.decisionEvents);
+    assert.equal(result.decisionEvents![0].type, "approved");
+  });
+
+  it("detects 'merge' as approval", () => {
+    const session = createSessionFile([
+      { type: "user", content: "merge" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.ok(result.decisionEvents);
+    assert.equal(result.decisionEvents![0].type, "approved");
+  });
+
+  it("detects 'yes' as approval", () => {
+    const session = createSessionFile([
+      { type: "user", content: "yes" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.ok(result.decisionEvents);
+    assert.equal(result.decisionEvents![0].type, "approved");
+  });
+
+  it("detects rejection patterns", () => {
+    const session = createSessionFile([
+      { type: "user", content: "don't do that, it's wrong" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.ok(result.decisionEvents);
+    assert.ok(result.decisionEvents!.some(e => e.type === "rejected"));
+  });
+
+  it("does not detect decisions in normal instructions", () => {
+    const session = createSessionFile([
+      { type: "user", content: "add a login form to the page" },
+      { type: "user", content: "now add validation for the email field" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.equal(result.decisionEvents, undefined);
+  });
+
+  it("detects multiple decision types in one session", () => {
+    const session = createSessionFile([
+      { type: "user", content: "1" },
+      { type: "user", content: "We don't plan to add voice support" },
+      { type: "user", content: "Can you run the tests?" },
+      { type: "user", content: "looks good" },
+      { type: "user", content: "merge" },
+    ]);
+    const result = extractConvergence(session, 1);
+    assert.ok(result.decisionEvents);
+    assert.ok(result.decisionEvents!.length >= 4);
+    const types = new Set(result.decisionEvents!.map(e => e.type));
+    assert.ok(types.has("option_selected"));
+    assert.ok(types.has("scope_decided"));
+    assert.ok(types.has("delegated"));
+    assert.ok(types.has("approved"));
+  });
+});
+
+describe("heredoc commit message extraction", () => {
+  it("extracts issue refs from heredoc-style commit messages", () => {
+    const session = createRawSessionFile([
+      userMsg("commit the changes"),
+      toolUseMsg("Bash", { command: "git commit -m \"$(cat <<'EOF'\nfeat: add vault consolidation (#36)\n\nCo-Authored-By: Claude\nEOF\n)\"" }),
+      toolUseMsg("Bash", { command: "git commit -m \"$(cat <<'EOF'\nfix: address review issues (#36)\n\nCo-Authored-By: Claude\nEOF\n)\"" }),
+    ]);
+    const result = extractConvergence(session, 0);
+    // Both reference #36, so second should be deduplicated
+    assert.equal(result.duplicateCommits, 1);
+  });
+
+  it("counts heredoc commits without issue refs individually", () => {
+    const session = createRawSessionFile([
+      userMsg("commit"),
+      toolUseMsg("Bash", { command: "git commit -m \"$(cat <<'EOF'\nfeat: add new feature\n\nCo-Authored-By: Claude\nEOF\n)\"" }),
+      toolUseMsg("Bash", { command: "git commit -m \"$(cat <<'EOF'\nfix: a different fix\nEOF\n)\"" }),
+    ]);
+    const result = extractConvergence(session, 0);
+    assert.equal(result.outcomes, 2);
+    assert.equal(result.duplicateCommits, 0);
+  });
 });
