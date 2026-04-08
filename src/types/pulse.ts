@@ -10,6 +10,9 @@ export interface PulseReport {
   promptEffectiveness: PromptEffectivenessSignal;
   interactionLeverage: "HIGH" | "MEDIUM" | "LOW";
   leverageScore: number;
+  sessionEconomics: SessionEconomicsSignal;
+  sessionROI: number;
+  sessionROILabel: "PRODUCTIVE" | "NEUTRAL" | "EXPENSIVE";
 }
 
 export interface AgentReport {
@@ -60,6 +63,18 @@ export interface ConvergenceSignal {
   pivot: PivotSignal | null;
   /** Per-agent convergence breakdown (only present when MPG data available) */
   agentBreakdown?: AgentConvergenceStats[];
+  /** Decision events detected from user messages (#55) */
+  decisionEvents?: DecisionEvent[];
+}
+
+/** A decision event detected from a user message */
+export interface DecisionEvent {
+  /** Exchange index (0-based) where the decision occurred */
+  atExchange: number;
+  /** Classification of the decision */
+  type: "option_selected" | "scope_decided" | "delegated" | "approved" | "rejected";
+  /** Brief description of what was detected */
+  detail: string;
 }
 
 export interface PivotSignal {
@@ -197,6 +212,43 @@ export interface DecisionQualitySignal {
   externalContextProvided: boolean;
   /** Commit messages from the session */
   commitMessages: string[];
+}
+
+export interface SessionEconomicsSignal {
+  /** Wall-clock duration from first to last message (ms) */
+  durationMs: number;
+  /** Time spent with active exchanges — messages < 5min apart (ms) */
+  activeMs: number;
+  /** Estimated idle time — sum of gaps > 5min (ms) */
+  idleMs: number;
+  /** Number of idle gaps detected */
+  idleGaps: number;
+  /** Thrashing episodes: stretches of 4+ exchanges with no decision events */
+  thrashingEpisodes: ThrashingEpisode[];
+  /** Token cost in dollars (null if model pricing unavailable) */
+  costDollars: number | null;
+  /** Tokens spent per decision event */
+  tokensPerDecision: number;
+  /** Tokens estimated burned during thrashing episodes */
+  thrashingTokens: number;
+}
+
+export interface ThrashingEpisode {
+  /** Exchange range start (inclusive, 0-based) */
+  startExchange: number;
+  /** Exchange range end (inclusive, 0-based) */
+  endExchange: number;
+  /** Number of exchanges in this episode */
+  exchanges: number;
+  /** Estimated tokens consumed — proportional allocation */
+  estimatedTokens: number;
+}
+
+export interface ModelPricing {
+  /** Dollars per million input tokens */
+  inputPerMTok: number;
+  /** Dollars per million output tokens */
+  outputPerMTok: number;
 }
 
 // ── Activity event types (issue #10) ──────────────────────────
