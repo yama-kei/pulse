@@ -186,3 +186,53 @@ describe("extractSessionEconomics - thrashing detection", () => {
     assert.equal(result.thrashingEpisodes.length, 0);
   });
 });
+
+// ── Task 4: Dollar cost model ─────────────────────────────────────────────────
+
+describe("extractSessionEconomics - cost model", () => {
+  it("computes cost from model pricing in session JSONL", () => {
+    // opus: input=$15/MTok, output=$75/MTok
+    // message1: 1000 input + 500 output
+    // message2: 2000 input + 1000 output
+    // total: 3000 input + 1500 output
+    // cost = 3000/1e6*15 + 1500/1e6*75 = 0.045 + 0.1125 = 0.1575
+    const filePath = createSessionFile([
+      { type: "assistant", timestamp: "2024-01-01T10:00:00.000Z", model: "claude-opus-4-5", input_tokens: 1000, output_tokens: 500 },
+      { type: "assistant", timestamp: "2024-01-01T10:01:00.000Z", model: "claude-opus-4-5", input_tokens: 2000, output_tokens: 1000 },
+    ]);
+    const result = extractSessionEconomics(filePath, makeTokenUsage(), makeConvergence());
+    assert.equal(result.costDollars, 0.1575);
+  });
+
+  it("returns null cost when no model field in session", () => {
+    const filePath = createSessionFile([
+      { type: "assistant", timestamp: "2024-01-01T10:00:00.000Z", input_tokens: 1000, output_tokens: 500 },
+    ]);
+    const result = extractSessionEconomics(filePath, makeTokenUsage(), makeConvergence());
+    assert.equal(result.costDollars, null);
+  });
+
+  it("handles blended cost with multiple models", () => {
+    // opus message: 1000 input + 500 output → 0.015 + 0.0375 = 0.0525
+    // haiku message: 1000 input + 500 output → 0.0008 + 0.002 = 0.0028
+    // total ≈ 0.0553 — between 0.05 and 0.07
+    const filePath = createSessionFile([
+      { type: "assistant", timestamp: "2024-01-01T10:00:00.000Z", model: "claude-opus-4-5", input_tokens: 1000, output_tokens: 500 },
+      { type: "assistant", timestamp: "2024-01-01T10:01:00.000Z", model: "claude-haiku-4-5", input_tokens: 1000, output_tokens: 500 },
+    ]);
+    const result = extractSessionEconomics(filePath, makeTokenUsage(), makeConvergence());
+    assert.ok(result.costDollars !== null);
+    assert.ok(result.costDollars! > 0.05 && result.costDollars! < 0.07);
+  });
+
+  it("uses prefix matching for model versions", () => {
+    // "claude-sonnet-4-6" should match "claude-sonnet-4" pricing
+    // sonnet: input=$3/MTok, output=$15/MTok
+    // 1000 input + 500 output → 0.003 + 0.0075 = 0.0105
+    const filePath = createSessionFile([
+      { type: "assistant", timestamp: "2024-01-01T10:00:00.000Z", model: "claude-sonnet-4-6", input_tokens: 1000, output_tokens: 500 },
+    ]);
+    const result = extractSessionEconomics(filePath, makeTokenUsage(), makeConvergence());
+    assert.equal(result.costDollars, 0.0105);
+  });
+});

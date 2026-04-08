@@ -120,10 +120,73 @@ function detectThrashing(convergence: ConvergenceSignal, tokenUsage: TokenUsageS
   return episodes;
 }
 
-// ── Cost placeholder ──────────────────────────────────────────────────────────
+// ── Cost model ────────────────────────────────────────────────────────────────
 
-function computeCost(_sessionPath: string | null): number | null {
+const MODEL_PRICING: Array<{ prefix: string; pricing: ModelPricing }> = [
+  { prefix: "claude-opus-4",   pricing: { inputPerMTok: 15,   outputPerMTok: 75  } },
+  { prefix: "claude-sonnet-4", pricing: { inputPerMTok: 3,    outputPerMTok: 15  } },
+  { prefix: "claude-haiku-4",  pricing: { inputPerMTok: 0.80, outputPerMTok: 4   } },
+];
+
+function findPricing(model: string): ModelPricing | null {
+  for (const entry of MODEL_PRICING) {
+    if (model.startsWith(entry.prefix)) return entry.pricing;
+  }
   return null;
+}
+
+interface PerMessageCost {
+  inputTokens: number;
+  outputTokens: number;
+  pricing: ModelPricing;
+}
+
+function readPerMessageCosts(sessionPath: string): PerMessageCost[] | null {
+  try {
+    const content = readFileSync(sessionPath, "utf-8");
+    const results: PerMessageCost[] = [];
+    let anyModel = false;
+
+    for (const line of content.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const obj: RawLine = JSON.parse(line);
+        if (obj.message?.role !== "assistant") continue;
+        const model = obj.message.model;
+        if (!model) continue;
+        anyModel = true;
+        const pricing = findPricing(model);
+        if (!pricing) continue;
+        const usage = obj.message.usage;
+        if (!usage) continue;
+        results.push({
+          inputTokens: usage.input_tokens ?? 0,
+          outputTokens: usage.output_tokens ?? 0,
+          pricing,
+        });
+      } catch {
+        // skip malformed lines
+      }
+    }
+
+    return anyModel ? results : null;
+  } catch {
+    return null;
+  }
+}
+
+function computeCost(sessionPath: string | null): number | null {
+  if (!sessionPath) return null;
+  const messages = readPerMessageCosts(sessionPath);
+  if (messages === null) return null;
+
+  let total = 0;
+  for (const msg of messages) {
+    total += (msg.inputTokens / 1_000_000) * msg.pricing.inputPerMTok;
+    total += (msg.outputTokens / 1_000_000) * msg.pricing.outputPerMTok;
+  }
+
+  return Math.round(total * 10000) / 10000;
 }
 
 // ── Main extractor ────────────────────────────────────────────────────────────
@@ -162,5 +225,4 @@ export function extractSessionEconomics(
   };
 }
 
-// Suppress unused import warning — ModelPricing will be used in Task 4
-void (0 as unknown as ModelPricing);
+
