@@ -236,3 +236,31 @@ describe("extractSessionEconomics - cost model", () => {
     assert.equal(result.costDollars, 0.0105);
   });
 });
+
+// ── Task 5: tokensPerDecision ─────────────────────────────────────────────────
+
+describe("extractSessionEconomics - tokensPerDecision", () => {
+  it("computes tokens per decision from total tokens and decision count", () => {
+    const convergence = makeConvergence({
+      decisionEvents: [
+        { atExchange: 1, type: "approved", detail: "a" },
+        { atExchange: 3, type: "approved", detail: "b" },
+      ],
+    });
+    const tokenUsage = makeTokenUsage({ totalTokens: 20000 });
+    const result = extractSessionEconomics(null, tokenUsage, convergence);
+    assert.equal(result.tokensPerDecision, 10000);
+  });
+
+  it("returns Infinity when no decisions detected", () => {
+    const convergence = makeConvergence({ decisionEvents: undefined });
+    const result = extractSessionEconomics(null, makeTokenUsage(), convergence);
+    assert.equal(result.tokensPerDecision, Infinity);
+  });
+
+  it("returns Infinity when decisionEvents is empty array", () => {
+    const convergence = makeConvergence({ decisionEvents: [] });
+    const result = extractSessionEconomics(null, makeTokenUsage(), convergence);
+    assert.equal(result.tokensPerDecision, Infinity);
+  });
+});
