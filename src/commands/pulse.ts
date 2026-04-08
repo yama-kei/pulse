@@ -5,6 +5,7 @@ import { extractDecisionQuality } from "../extractors/decision-quality.js";
 import { extractTokenUsage } from "../extractors/token-usage.js";
 import { extractInteractionPattern } from "../extractors/interaction-pattern.js";
 import { extractPromptEffectiveness } from "../extractors/prompt-effectiveness.js";
+import { extractSessionEconomics } from "../extractors/session-economics.js";
 import { correlateMpgEvents } from "../activity/mpg-correlator.js";
 import { loadReports } from "./history.js";
 import { execSync } from "node:child_process";
@@ -18,12 +19,13 @@ export async function runPulse(projectDir: string, sessionPath?: string): Promis
   const filesChanged = countFilesChanged(projectDir, timeWindow);
   const mpgData = correlateMpgEvents(sessionFile);
   const convergence = extractConvergence(sessionFile, filesChanged, mpgData);
-  const decisionQuality = extractDecisionQuality(projectDir);
+  const decisionQuality = extractDecisionQuality(projectDir, timeWindow.start ?? undefined);
   const intentAnchoring = extractIntentAnchoring(projectDir, decisionQuality.commitMessages);
   const tokenUsage = extractTokenUsage(sessionFile, convergence.exchanges, convergence.outcomes);
   const interactionPattern = extractInteractionPattern(sessionFile, mpgData);
   const promptEffectiveness = await extractPromptEffectiveness(sessionFile);
   const { score: leverageScore, label: interactionLeverage } = computeLeverage(convergence, decisionQuality);
+  const sessionEconomics = extractSessionEconomics(sessionFile, tokenUsage, convergence);
 
   return {
     timestamp: new Date().toISOString(),
@@ -37,6 +39,9 @@ export async function runPulse(projectDir: string, sessionPath?: string): Promis
     promptEffectiveness,
     interactionLeverage,
     leverageScore,
+    sessionEconomics,
+    sessionROI: 0,
+    sessionROILabel: "NEUTRAL" as const,
   };
 }
 
@@ -67,6 +72,21 @@ export function formatReport(report: PulseReport): string {
     for (const a of c.agentBreakdown) {
       const penaltyNote = a.convergencePenalty > 0 ? ` (+${a.convergencePenalty} penalty)` : "";
       lines.push(`    ${a.agent.padEnd(16)} ${a.messages} msgs, ${a.errors} errors (${a.errorRate}%)${penaltyNote}`);
+    }
+  }
+  if (c.decisionEvents && c.decisionEvents.length > 0) {
+    lines.push("");
+    lines.push("DECISION EVENTS");
+    lines.push(`  Detected:              ${c.decisionEvents.length}`);
+    const typeCounts: Record<string, number> = {};
+    for (const e of c.decisionEvents) {
+      typeCounts[e.type] = (typeCounts[e.type] || 0) + 1;
+    }
+    for (const [type, count] of Object.entries(typeCounts).sort((a, b) => b[1] - a[1])) {
+      lines.push(`    ${type.padEnd(20)} ${count}x`);
+    }
+    for (const e of c.decisionEvents) {
+      lines.push(`  [${e.atExchange + 1}] ${e.type}: ${e.detail}`);
     }
   }
   lines.push("");
@@ -471,6 +491,7 @@ export function aggregateReports(reports: PulseReport[], project: string): Pulse
 
   // Leverage: compute from aggregate convergence + decision quality
   const { score: leverageScore, label: interactionLeverage } = computeLeverage(convergence, decisionQuality);
+  const aggregateSessionEconomics = extractSessionEconomics(null, tokenUsage, convergence);
 
   return {
     timestamp: new Date().toISOString(),
@@ -484,6 +505,9 @@ export function aggregateReports(reports: PulseReport[], project: string): Pulse
     promptEffectiveness,
     interactionLeverage,
     leverageScore,
+    sessionEconomics: aggregateSessionEconomics,
+    sessionROI: 0,
+    sessionROILabel: "NEUTRAL" as const,
   };
 }
 
