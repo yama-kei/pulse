@@ -120,3 +120,69 @@ describe("extractSessionEconomics - time analysis", () => {
     assert.equal(result.durationMs, 0);
   });
 });
+
+// ── Task 3: Thrashing detection ───────────────────────────────────────────────
+
+describe("extractSessionEconomics - thrashing detection", () => {
+  it("detects thrashing when 4+ exchanges have no decisions", () => {
+    // 5 exchanges, decision at 0 → episode at 1-4
+    const convergence = makeConvergence({
+      exchanges: 5,
+      decisionEvents: [{ atExchange: 0, type: "approved", detail: "approved" }],
+    });
+    const tokenUsage = makeTokenUsage({ totalTokens: 50000 });
+    const result = extractSessionEconomics(null, tokenUsage, convergence);
+    assert.equal(result.thrashingEpisodes.length, 1);
+    assert.equal(result.thrashingEpisodes[0].startExchange, 1);
+    assert.equal(result.thrashingEpisodes[0].endExchange, 4);
+    assert.equal(result.thrashingEpisodes[0].estimatedTokens, 40000);
+  });
+
+  it("does not flag thrashing for sequences < 4 exchanges", () => {
+    const convergence = makeConvergence({
+      exchanges: 3,
+      decisionEvents: [{ atExchange: 0, type: "approved", detail: "approved" }],
+    });
+    const result = extractSessionEconomics(null, makeTokenUsage(), convergence);
+    assert.equal(result.thrashingEpisodes.length, 0);
+  });
+
+  it("detects multiple thrashing episodes separated by decisions", () => {
+    // 10 exchanges, decisions at 0 and 5 → episodes at 1-4 and 6-9
+    const convergence = makeConvergence({
+      exchanges: 10,
+      decisionEvents: [
+        { atExchange: 0, type: "approved", detail: "approved" },
+        { atExchange: 5, type: "approved", detail: "approved" },
+      ],
+    });
+    const tokenUsage = makeTokenUsage({ totalTokens: 100000 });
+    const result = extractSessionEconomics(null, tokenUsage, convergence);
+    assert.equal(result.thrashingEpisodes.length, 2);
+    assert.equal(result.thrashingEpisodes[0].startExchange, 1);
+    assert.equal(result.thrashingEpisodes[0].endExchange, 4);
+    assert.equal(result.thrashingEpisodes[1].startExchange, 6);
+    assert.equal(result.thrashingEpisodes[1].endExchange, 9);
+  });
+
+  it("flags entire session as thrashing if 0 decisions and 4+ exchanges", () => {
+    const convergence = makeConvergence({
+      exchanges: 5,
+      decisionEvents: [],
+    });
+    const tokenUsage = makeTokenUsage({ totalTokens: 50000 });
+    const result = extractSessionEconomics(null, tokenUsage, convergence);
+    assert.equal(result.thrashingEpisodes.length, 1);
+    assert.equal(result.thrashingEpisodes[0].startExchange, 0);
+    assert.equal(result.thrashingEpisodes[0].endExchange, 4);
+  });
+
+  it("no thrashing if 0 decisions and < 4 exchanges", () => {
+    const convergence = makeConvergence({
+      exchanges: 1,
+      decisionEvents: [],
+    });
+    const result = extractSessionEconomics(null, makeTokenUsage(), convergence);
+    assert.equal(result.thrashingEpisodes.length, 0);
+  });
+});

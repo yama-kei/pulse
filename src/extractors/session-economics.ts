@@ -74,11 +74,53 @@ export function analyzeTime(timestamps: number[]): TimeAnalysis {
   return { durationMs, activeMs, idleMs, idleGaps };
 }
 
-// ── Placeholders ──────────────────────────────────────────────────────────────
+// ── Thrashing detection ───────────────────────────────────────────────────────
 
-function detectThrashing(_convergence: ConvergenceSignal, _tokenUsage: TokenUsageSignal): ThrashingEpisode[] {
-  return [];
+function makeEpisode(start: number, end: number, exchanges: number, totalExchanges: number, totalTokens: number): ThrashingEpisode {
+  return {
+    startExchange: start,
+    endExchange: end,
+    exchanges,
+    estimatedTokens: totalExchanges > 0 ? Math.round((exchanges / totalExchanges) * totalTokens) : 0,
+  };
 }
+
+function detectThrashing(convergence: ConvergenceSignal, tokenUsage: TokenUsageSignal): ThrashingEpisode[] {
+  const totalExchanges = convergence.exchanges;
+  if (totalExchanges < 4) return [];
+
+  const decisionIndices = new Set(
+    (convergence.decisionEvents ?? []).map(e => e.atExchange)
+  );
+
+  const episodes: ThrashingEpisode[] = [];
+  let runStart: number | null = null;
+
+  for (let i = 0; i < totalExchanges; i++) {
+    if (decisionIndices.has(i)) {
+      if (runStart !== null) {
+        const runLen = i - runStart;
+        if (runLen >= 4) {
+          episodes.push(makeEpisode(runStart, i - 1, runLen, totalExchanges, tokenUsage.totalTokens));
+        }
+      }
+      runStart = null;
+    } else {
+      if (runStart === null) runStart = i;
+    }
+  }
+
+  if (runStart !== null) {
+    const runLen = totalExchanges - runStart;
+    if (runLen >= 4) {
+      episodes.push(makeEpisode(runStart, totalExchanges - 1, runLen, totalExchanges, tokenUsage.totalTokens));
+    }
+  }
+
+  return episodes;
+}
+
+// ── Cost placeholder ──────────────────────────────────────────────────────────
 
 function computeCost(_sessionPath: string | null): number | null {
   return null;
