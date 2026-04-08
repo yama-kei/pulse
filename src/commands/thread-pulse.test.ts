@@ -24,6 +24,9 @@ function makeReport(overrides: Record<string, unknown> = {}): PulseReport {
     },
     interactionLeverage: "MEDIUM",
     leverageScore: 0.55,
+    sessionEconomics: { durationMs: 600000, activeMs: 540000, idleMs: 60000, idleGaps: 1, thrashingEpisodes: [], costDollars: null, tokensPerDecision: 10000, thrashingTokens: 0 },
+    sessionROI: 1.0,
+    sessionROILabel: "NEUTRAL",
     ...overrides,
   } as unknown as PulseReport;
 }

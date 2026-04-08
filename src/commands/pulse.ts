@@ -26,6 +26,7 @@ export async function runPulse(projectDir: string, sessionPath?: string): Promis
   const promptEffectiveness = await extractPromptEffectiveness(sessionFile);
   const { score: leverageScore, label: interactionLeverage } = computeLeverage(convergence, decisionQuality);
   const sessionEconomics = extractSessionEconomics(sessionFile, tokenUsage, convergence);
+  const { score: sessionROI, label: sessionROILabel } = computeSessionROI(convergence, sessionEconomics, decisionQuality);
 
   return {
     timestamp: new Date().toISOString(),
@@ -40,8 +41,8 @@ export async function runPulse(projectDir: string, sessionPath?: string): Promis
     interactionLeverage,
     leverageScore,
     sessionEconomics,
-    sessionROI: 0,
-    sessionROILabel: "NEUTRAL" as const,
+    sessionROI,
+    sessionROILabel,
   };
 }
 
@@ -126,6 +127,33 @@ export function formatReport(report: PulseReport): string {
     lines.push("");
   }
 
+  // Session Economics
+  const se = report.sessionEconomics;
+  if (se.durationMs > 0 || se.costDollars !== null) {
+    lines.push("SESSION ECONOMICS");
+    if (se.durationMs > 0) {
+      const dur = formatDuration(se.durationMs);
+      const active = formatDuration(se.activeMs);
+      const idle = se.idleGaps > 0 ? `, ${formatDuration(se.idleMs)} idle` : "";
+      lines.push(`  Duration:              ${dur} (${active} active${idle})`);
+    }
+    const decisionCount = report.convergence.decisionEvents?.length ?? 0;
+    if (decisionCount > 0) {
+      const tpd = se.tokensPerDecision === Infinity ? "n/a" : `${(se.tokensPerDecision / 1000).toFixed(1)}k tokens/decision`;
+      lines.push(`  Decisions:             ${decisionCount} detected (${tpd})`);
+    }
+    if (se.thrashingEpisodes.length > 0) {
+      const ep = se.thrashingEpisodes.length;
+      const totalThrashTokens = `~${(se.thrashingTokens / 1000).toFixed(0)}k tokens`;
+      lines.push(`  Thrashing:             ${ep} episode${ep > 1 ? "s" : ""} (${totalThrashTokens})`);
+    }
+    if (se.costDollars !== null) {
+      lines.push(`  Cost:                  $${se.costDollars.toFixed(2)} (estimated)`);
+    }
+    lines.push(`  Session ROI:           ${report.sessionROI.toFixed(2)} (${report.sessionROILabel})`);
+    lines.push("");
+  }
+
   // Interaction Pattern
   lines.push("INTERACTION PATTERN");
   lines.push(`  User style:            ${ip.userStyle}`);
@@ -180,6 +208,9 @@ export function formatReport(report: PulseReport): string {
   // Summary
   lines.push(hr);
   lines.push(`Interaction Leverage:    ${report.leverageScore.toFixed(2)} (${report.interactionLeverage})`);
+  if (report.sessionEconomics.durationMs > 0 || report.sessionEconomics.costDollars !== null) {
+    lines.push(`Session ROI:             ${report.sessionROI.toFixed(2)} (${report.sessionROILabel})`);
+  }
   lines.push(hr);
 
   // Actionable nudges
@@ -260,11 +291,54 @@ export function computeLeverage(
   return { score, label };
 }
 
+export function computeSessionROI(
+  convergence: PulseReport["convergence"],
+  economics: PulseReport["sessionEconomics"],
+  decisionQuality: PulseReport["decisionQuality"]
+): { score: number; label: "PRODUCTIVE" | "NEUTRAL" | "EXPENSIVE" } {
+  const decisions = convergence.decisionEvents?.length ?? 0;
+  const { exchanges, outcomes, rate, reworkPercent } = convergence;
+
+  // Yield components
+  const decisionDensity = Math.min(decisions / Math.max(exchanges, 1), 1);
+  const outcomeDensity = Math.min(outcomes / Math.max(exchanges, 1), 1);
+  const convergenceEfficiency = 1 / (1 + rate);
+  const yield_ = decisionDensity * 0.4 + outcomeDensity * 0.3 + convergenceEfficiency * 0.3;
+
+  // Cost components
+  const tokenBurn = economics.tokensPerDecision === Infinity
+    ? 1
+    : Math.min(economics.tokensPerDecision / 50000, 1);
+  const timeCost = economics.durationMs > 0
+    ? Math.min(economics.idleMs / economics.durationMs, 1)
+    : 0;
+  const instability = reworkPercent / 100 + Math.min(economics.thrashingEpisodes.length * 0.15, 0.45);
+  const cost = tokenBurn * 0.4 + timeCost * 0.3 + instability * 0.3;
+
+  const raw = yield_ / Math.max(cost, 0.1);
+  const score = Math.round(raw * 100) / 100;
+
+  const label: "PRODUCTIVE" | "NEUTRAL" | "EXPENSIVE" =
+    score >= 1.5 ? "PRODUCTIVE" : score >= 0.8 ? "NEUTRAL" : "EXPENSIVE";
+
+  return { score, label };
+}
+
 function rateLabel(rate: number): string {
   if (rate <= 0.5) return "excellent";
   if (rate <= 1.5) return "good";
   if (rate <= 4) return "moderate";
   return "high — consider clearer problem framing";
+}
+
+function formatDuration(ms: number): string {
+  const totalMinutes = Math.round(ms / 60000);
+  if (totalMinutes >= 60) {
+    const hours = Math.floor(totalMinutes / 60);
+    const mins = totalMinutes % 60;
+    return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+  }
+  return `${totalMinutes}m`;
 }
 
 function generateNudges(report: PulseReport): string[] {
@@ -491,7 +565,32 @@ export function aggregateReports(reports: PulseReport[], project: string): Pulse
 
   // Leverage: compute from aggregate convergence + decision quality
   const { score: leverageScore, label: interactionLeverage } = computeLeverage(convergence, decisionQuality);
-  const aggregateSessionEconomics = extractSessionEconomics(null, tokenUsage, convergence);
+
+  // Session economics: sum across agents
+  const totalDurationMs = reports.reduce((s, r) => s + r.sessionEconomics.durationMs, 0);
+  const totalActiveMs = reports.reduce((s, r) => s + r.sessionEconomics.activeMs, 0);
+  const totalIdleMs = reports.reduce((s, r) => s + r.sessionEconomics.idleMs, 0);
+  const totalIdleGaps = reports.reduce((s, r) => s + r.sessionEconomics.idleGaps, 0);
+  const allThrashingEpisodes = reports.flatMap((r) => r.sessionEconomics.thrashingEpisodes);
+  const allCosts = reports.map((r) => r.sessionEconomics.costDollars);
+  const anyCostNull = allCosts.some((c) => c === null);
+  const totalCostDollars = anyCostNull ? null : allCosts.reduce((s, c) => s! + c!, 0);
+  const totalDecisions = reports.reduce((s, r) => s + (r.convergence.decisionEvents?.length ?? 0), 0);
+  const aggTokPerDecision = totalDecisions > 0 ? Math.round(totalTokens / totalDecisions) : Infinity;
+  const aggThrashingTokens = allThrashingEpisodes.reduce((s, e) => s + e.estimatedTokens, 0);
+
+  const sessionEconomics = {
+    durationMs: totalDurationMs,
+    activeMs: totalActiveMs,
+    idleMs: totalIdleMs,
+    idleGaps: totalIdleGaps,
+    thrashingEpisodes: allThrashingEpisodes,
+    costDollars: totalCostDollars,
+    tokensPerDecision: aggTokPerDecision,
+    thrashingTokens: aggThrashingTokens,
+  };
+
+  const { score: sessionROI, label: sessionROILabel } = computeSessionROI(convergence, sessionEconomics, decisionQuality);
 
   return {
     timestamp: new Date().toISOString(),
@@ -505,9 +604,9 @@ export function aggregateReports(reports: PulseReport[], project: string): Pulse
     promptEffectiveness,
     interactionLeverage,
     leverageScore,
-    sessionEconomics: aggregateSessionEconomics,
-    sessionROI: 0,
-    sessionROILabel: "NEUTRAL" as const,
+    sessionEconomics,
+    sessionROI,
+    sessionROILabel,
   };
 }
 

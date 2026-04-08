@@ -28,6 +28,9 @@ function makeReport(overrides: Record<string, unknown> = {}): Record<string, unk
     },
     interactionLeverage: "MEDIUM",
     leverageScore: 0.55,
+    sessionEconomics: { durationMs: 0, activeMs: 0, idleMs: 0, idleGaps: 0, thrashingEpisodes: [], costDollars: null, tokensPerDecision: Infinity, thrashingTokens: 0 },
+    sessionROI: 0,
+    sessionROILabel: "NEUTRAL",
     ...overrides,
   };
 }
