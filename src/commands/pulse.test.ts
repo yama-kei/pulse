@@ -3,7 +3,7 @@ import * as assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { loadHistoricalScores, formatDelta, runPulse, computeLeverage } from "./pulse.js";
+import { loadHistoricalScores, formatDelta, runPulse, computeLeverage, computeSessionROI } from "./pulse.js";
 
 const tmp = join(tmpdir(), "pulse-coaching-test-" + process.pid);
 
@@ -28,6 +28,9 @@ function makeReport(overrides: Record<string, unknown> = {}): Record<string, unk
     },
     interactionLeverage: "MEDIUM",
     leverageScore: 0.55,
+    sessionEconomics: { durationMs: 0, activeMs: 0, idleMs: 0, idleGaps: 0, thrashingEpisodes: [], costDollars: null, tokensPerDecision: Infinity, thrashingTokens: 0 },
+    sessionROI: 0,
+    sessionROILabel: "NEUTRAL",
     ...overrides,
   };
 }
@@ -270,5 +273,78 @@ describe("runPulse with --session path", () => {
     // No session file will be found for tmpDir, so convergence should have 0 exchanges
     const report = await runPulse(tmpDir);
     assert.equal(report.convergence.exchanges, 0);
+  });
+});
+
+describe("computeSessionROI", () => {
+  function makeConv(overrides?: Partial<Record<string, unknown>>): Record<string, unknown> {
+    return {
+      exchanges: 5, outcomes: 3, rate: 1.67,
+      reworkInstances: 0, reworkPercent: 0,
+      duplicateCommits: 0, blindRetries: 0, pivot: null,
+      ...overrides,
+    };
+  }
+
+  function makeEcon(overrides?: Partial<Record<string, unknown>>): Record<string, unknown> {
+    return {
+      durationMs: 600000, activeMs: 540000, idleMs: 60000, idleGaps: 1,
+      thrashingEpisodes: [], costDollars: null,
+      tokensPerDecision: 10000, thrashingTokens: 0,
+      ...overrides,
+    };
+  }
+
+  function makeDQ(): Record<string, unknown> {
+    return {
+      commitsTotal: 3, commitsWithWhy: 2, commitsWithIssueRef: 1,
+      externalContextProvided: false, commitMessages: [],
+    };
+  }
+
+  it("returns PRODUCTIVE for high-yield, low-cost session", () => {
+    const convergence = makeConv({
+      exchanges: 5, outcomes: 5, rate: 1,
+      decisionEvents: [
+        { atExchange: 0, type: "approved", detail: "yes" },
+        { atExchange: 1, type: "delegated", detail: "go" },
+        { atExchange: 2, type: "approved", detail: "lgtm" },
+      ],
+    });
+    const economics = makeEcon({ tokensPerDecision: 5000, idleMs: 0, durationMs: 600000 });
+    const { score, label } = computeSessionROI(convergence as any, economics as any, makeDQ() as any);
+    assert.ok(score >= 1.5);
+    assert.equal(label, "PRODUCTIVE");
+  });
+
+  it("returns EXPENSIVE for no-decision, high-idle session", () => {
+    const convergence = makeConv({ exchanges: 10, outcomes: 1, rate: 10, decisionEvents: undefined });
+    const economics = makeEcon({
+      tokensPerDecision: Infinity, idleMs: 500000, durationMs: 600000,
+      thrashingEpisodes: [{ startExchange: 0, endExchange: 9, exchanges: 10, estimatedTokens: 50000 }],
+    });
+    const { score, label } = computeSessionROI(convergence as any, economics as any, makeDQ() as any);
+    assert.ok(score < 0.8);
+    assert.equal(label, "EXPENSIVE");
+  });
+
+  it("returns NEUTRAL for average session", () => {
+    const convergence = makeConv({
+      exchanges: 10, outcomes: 3, rate: 3.33,
+      decisionEvents: [{ atExchange: 5, type: "approved", detail: "ok" }],
+    });
+    const economics = makeEcon({ tokensPerDecision: 20000, idleMs: 180000, durationMs: 600000 });
+    const { score, label } = computeSessionROI(convergence as any, economics as any, makeDQ() as any);
+    assert.ok(score >= 0.8 && score < 1.5);
+    assert.equal(label, "NEUTRAL");
+  });
+
+  it("handles zero exchanges gracefully", () => {
+    const convergence = makeConv({ exchanges: 0, outcomes: 0, rate: 0 });
+    const economics = makeEcon({ durationMs: 0, idleMs: 0, tokensPerDecision: Infinity });
+    const { score, label } = computeSessionROI(convergence as any, economics as any, makeDQ() as any);
+    assert.ok(typeof score === "number");
+    assert.ok(!isNaN(score));
+    assert.ok(["PRODUCTIVE", "NEUTRAL", "EXPENSIVE"].includes(label));
   });
 });
