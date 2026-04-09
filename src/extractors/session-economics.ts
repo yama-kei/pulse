@@ -57,19 +57,16 @@ export function analyzeTime(timestamps: number[]): TimeAnalysis {
 
   let idleMs = 0;
   let idleGaps = 0;
-  let lastIdleEnd = sorted[0];
 
   for (let i = 1; i < sorted.length; i++) {
     const gap = sorted[i] - sorted[i - 1];
     if (gap > IDLE_THRESHOLD_MS) {
       idleMs += gap;
       idleGaps += 1;
-      lastIdleEnd = sorted[i];
     }
   }
 
-  // activeMs = time from the end of the last idle gap to the end of the session
-  const activeMs = sorted[sorted.length - 1] - lastIdleEnd;
+  const activeMs = durationMs - idleMs;
 
   return { durationMs, activeMs, idleMs, idleGaps };
 }
@@ -200,11 +197,11 @@ export function extractSessionEconomics(
   const timestamps = sessionPath ? readTimestamps(sessionPath) : [];
   const time = analyzeTime(timestamps);
 
-  // Thrashing (placeholder)
+  // Thrashing detection
   const thrashingEpisodes = detectThrashing(convergence, tokenUsage);
   const thrashingTokens = thrashingEpisodes.reduce((sum, ep) => sum + ep.estimatedTokens, 0);
 
-  // Cost (placeholder)
+  // Dollar cost
   const costDollars = computeCost(sessionPath);
 
   // Tokens per decision

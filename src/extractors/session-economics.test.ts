@@ -90,7 +90,7 @@ describe("extractSessionEconomics - time analysis", () => {
     const result = extractSessionEconomics(filePath, makeTokenUsage(), makeConvergence());
     assert.equal(result.idleGaps, 1);
     assert.equal(result.idleMs, 600000);
-    assert.equal(result.activeMs, 120000);
+    assert.equal(result.activeMs, 240000); // 14min total - 10min idle = 4min active
   });
 
   it("does not flag gaps <= 5 minutes as idle", () => {
