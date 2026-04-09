@@ -109,11 +109,11 @@ export function computeHandoffPatterns(mpgData: CorrelatedMpgData): HandoffPatte
   const handoffEvents = mpgData.events.filter(e => e.event_type === "agent_handoff");
   if (handoffEvents.length === 0) return null;
 
-  // Count handoff pairs
+  // Count handoff pairs (prefer new from_agent/to_agent fields, fall back to legacy)
   const pairCounts = new Map<string, { from: string; to: string; count: number }>();
   for (const event of handoffEvents) {
-    const from = event.agent_source || "unknown";
-    const to = event.agent_target || "unknown";
+    const from = event.from_agent || event.agent_source || "user";
+    const to = event.to_agent || event.agent_target || "unknown";
     const key = `${from}→${to}`;
     const existing = pairCounts.get(key);
     if (existing) {

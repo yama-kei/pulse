@@ -93,4 +93,28 @@ describe("correlateMpgEvents", () => {
     const result = correlateMpgEvents("/path/to/session.jsonl", undefined, "/nonexistent/mpg-sessions.jsonl");
     assert.equal(result, null);
   });
+
+  it("includes events from the same thread_id across different session IDs", () => {
+    const events: MpgSessionEvent[] = [
+      { schema_version: 1, timestamp: "2026-03-30T10:00:00Z", event_type: "session_start", session_id: "my-session", project_key: "t", project_dir: "/t", thread_id: "thread-1" },
+      { schema_version: 1, timestamp: "2026-03-30T10:01:00Z", event_type: "agent_handoff", session_id: "my-session", project_key: "t", project_dir: "/t", thread_id: "thread-1", from_agent: "pm", to_agent: "engineer" },
+      { schema_version: 1, timestamp: "2026-03-30T10:02:00Z", event_type: "session_start", session_id: "other-session", project_key: "t", project_dir: "/t", thread_id: "thread-1", agent_name: "engineer" },
+      { schema_version: 1, timestamp: "2026-03-30T10:03:00Z", event_type: "message_routed", session_id: "other-session", project_key: "t", project_dir: "/t", thread_id: "thread-1", agent_target: "engineer" },
+      { schema_version: 1, timestamp: "2026-03-30T10:04:00Z", event_type: "session_start", session_id: "unrelated", project_key: "t", project_dir: "/t", thread_id: "thread-2" },
+    ];
+    const result = correlateMpgEvents("/path/to/my-session.jsonl", events);
+    assert.notEqual(result, null);
+    assert.equal(result!.sessionId, "my-session");
+    assert.equal(result!.events.length, 4); // all thread-1 events, not the unrelated one
+  });
+
+  it("does not expand correlation when no thread_id is present", () => {
+    const events: MpgSessionEvent[] = [
+      { schema_version: 1, timestamp: "2026-03-30T10:00:00Z", event_type: "session_start", session_id: "my-session", project_key: "t", project_dir: "/t" },
+      { schema_version: 1, timestamp: "2026-03-30T10:01:00Z", event_type: "message_routed", session_id: "other-session", project_key: "t", project_dir: "/t" },
+    ];
+    const result = correlateMpgEvents("/path/to/my-session.jsonl", events);
+    assert.notEqual(result, null);
+    assert.equal(result!.events.length, 1);
+  });
 });

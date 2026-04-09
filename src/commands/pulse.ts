@@ -1,8 +1,9 @@
-import { PulseReport, AgentReport, ThreadPulseReport } from "../types/pulse.js";
+import { PulseReport, AgentReport, ThreadPulseReport, DecisionEventsSignal } from "../types/pulse.js";
 import { extractConvergence, findSessionFile, extractSessionTimeWindow, SessionTimeWindow } from "../extractors/convergence.js";
 import { extractIntentAnchoring } from "../extractors/intent-anchoring.js";
 import { extractDecisionQuality } from "../extractors/decision-quality.js";
 import { extractTokenUsage } from "../extractors/token-usage.js";
+import { extractDecisionEvents } from "../extractors/decision-events.js";
 import { extractInteractionPattern } from "../extractors/interaction-pattern.js";
 import { extractPromptEffectiveness } from "../extractors/prompt-effectiveness.js";
 import { extractSessionEconomics } from "../extractors/session-economics.js";
@@ -22,6 +23,7 @@ export async function runPulse(projectDir: string, sessionPath?: string): Promis
   const decisionQuality = extractDecisionQuality(projectDir, timeWindow.start ?? undefined);
   const intentAnchoring = extractIntentAnchoring(projectDir, decisionQuality.commitMessages);
   const tokenUsage = extractTokenUsage(sessionFile, convergence.exchanges, convergence.outcomes);
+  const decisionEvents = extractDecisionEvents(sessionFile, tokenUsage.totalTokens);
   const interactionPattern = extractInteractionPattern(sessionFile, mpgData);
   const promptEffectiveness = await extractPromptEffectiveness(sessionFile);
   const { score: leverageScore, label: interactionLeverage } = computeLeverage(convergence, decisionQuality);
@@ -36,6 +38,7 @@ export async function runPulse(projectDir: string, sessionPath?: string): Promis
     intentAnchoring,
     decisionQuality,
     tokenUsage,
+    decisionEvents,
     interactionPattern,
     promptEffectiveness,
     interactionLeverage,
@@ -127,6 +130,23 @@ export function formatReport(report: PulseReport): string {
     lines.push("");
   }
 
+  // Decision Events
+  const de = report.decisionEvents;
+  if (de.available) {
+    lines.push("DECISION EVENTS");
+    lines.push(`  Decisions detected:    ${de.decisionCount}`);
+    if (de.tokensPerDecision > 0) {
+      lines.push(`  Tokens per decision:   ${de.tokensPerDecision.toLocaleString()}`);
+    }
+    if (de.events.length > 0) {
+      for (const event of de.events) {
+        const files = event.relatedFiles.length > 0 ? ` (${event.relatedFiles.join(", ")})` : "";
+        lines.push(`    ${event.type} [${event.confidence}]${files}`);
+      }
+    }
+    lines.push("");
+  }
+
   // Session Economics
   const se = report.sessionEconomics;
   if (se.durationMs > 0 || se.costDollars !== null) {
@@ -137,10 +157,10 @@ export function formatReport(report: PulseReport): string {
       const idle = se.idleGaps > 0 ? `, ${formatDuration(se.idleMs)} idle` : "";
       lines.push(`  Duration:              ${dur} (${active} active${idle})`);
     }
-    const decisionCount = report.convergence.decisionEvents?.length ?? 0;
-    if (decisionCount > 0) {
+    const heuristicDecisionCount = report.convergence.decisionEvents?.length ?? 0;
+    if (heuristicDecisionCount > 0) {
       const tpd = se.tokensPerDecision === Infinity ? "n/a" : `${(se.tokensPerDecision / 1000).toFixed(1)}k tokens/decision`;
-      lines.push(`  Decisions:             ${decisionCount} detected (${tpd})`);
+      lines.push(`  Decisions:             ${heuristicDecisionCount} detected (${tpd})`);
     }
     if (se.thrashingEpisodes.length > 0) {
       const ep = se.thrashingEpisodes.length;
@@ -395,6 +415,15 @@ function generateNudges(report: PulseReport): string[] {
     }
   }
 
+  // Decision event nudges
+  const de = report.decisionEvents;
+  if (de.available && de.decisionCount === 0 && tu.available && tu.totalTokens > 10000) {
+    nudges.push("No decision events detected despite significant token usage. Consider breaking work into smaller, committable increments.");
+  }
+  if (de.available && de.tokensPerDecision > 50000) {
+    nudges.push(`${de.tokensPerDecision.toLocaleString()} tokens per decision is high. More frequent commits and smaller scope can improve decision yield.`);
+  }
+
   return nudges;
 }
 
@@ -496,6 +525,17 @@ export function aggregateReports(reports: PulseReport[], project: string): Pulse
     tokensPerExchange: totalExchanges > 0 ? Math.round(totalTokens / totalExchanges) : 0,
     tokensPerOutcome: totalOutcomes > 0 ? Math.round(totalTokens / totalOutcomes) : 0,
     available: anyTokensAvailable,
+  };
+
+  // Decision events: merge all events, recalculate totals
+  const allDecisionEvents = reports.flatMap(r => r.decisionEvents?.events ?? []);
+  const anyDecisionEventsAvailable = reports.some(r => r.decisionEvents?.available);
+  const totalDecisionCount = allDecisionEvents.length;
+  const decisionEvents: DecisionEventsSignal = {
+    events: allDecisionEvents.sort((a, b) => a.timestamp.localeCompare(b.timestamp)),
+    decisionCount: totalDecisionCount,
+    tokensPerDecision: totalDecisionCount > 0 ? Math.round(totalTokens / totalDecisionCount) : 0,
+    available: anyDecisionEventsAvailable,
   };
 
   // Decision quality: union commit messages (dedup), recalculate totals
@@ -600,6 +640,7 @@ export function aggregateReports(reports: PulseReport[], project: string): Pulse
     intentAnchoring,
     decisionQuality,
     tokenUsage,
+    decisionEvents,
     interactionPattern,
     promptEffectiveness,
     interactionLeverage,

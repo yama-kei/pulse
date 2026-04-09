@@ -6,6 +6,7 @@ export interface PulseReport {
   intentAnchoring: IntentAnchoringSignal;
   decisionQuality: DecisionQualitySignal;
   tokenUsage: TokenUsageSignal;
+  decisionEvents: DecisionEventsSignal;
   interactionPattern: InteractionPatternSignal;
   promptEffectiveness: PromptEffectivenessSignal;
   interactionLeverage: "HIGH" | "MEDIUM" | "LOW";
@@ -64,11 +65,11 @@ export interface ConvergenceSignal {
   /** Per-agent convergence breakdown (only present when MPG data available) */
   agentBreakdown?: AgentConvergenceStats[];
   /** Decision events detected from user messages (#55) */
-  decisionEvents?: DecisionEvent[];
+  decisionEvents?: HeuristicDecisionEvent[];
 }
 
-/** A decision event detected from a user message */
-export interface DecisionEvent {
+/** A heuristic decision event detected from a user message pattern */
+export interface HeuristicDecisionEvent {
   /** Exchange index (0-based) where the decision occurred */
   atExchange: number;
   /** Classification of the decision */
@@ -251,6 +252,32 @@ export interface ModelPricing {
   outputPerMTok: number;
 }
 
+// ── Decision event types (issue #52, Phase 1) ───────────────
+
+export type DecisionEventType =
+  | 'implementation_decided'
+  | 'root_cause_identified'
+  | 'schema_locked'
+  | 'contract_finalized'
+  | 'feature_shipped'
+  | 'bug_resolved'
+  | 'design_chosen';
+
+export interface DecisionEvent {
+  type: DecisionEventType;
+  timestamp: string;
+  confidence: 'high' | 'medium' | 'low';
+  relatedFiles: string[];
+  tokensCost: number;
+}
+
+export interface DecisionEventsSignal {
+  events: DecisionEvent[];
+  decisionCount: number;
+  tokensPerDecision: number;
+  available: boolean;
+}
+
 // ── Activity event types (issue #10) ──────────────────────────
 
 export interface MpgSessionEvent {
@@ -260,8 +287,12 @@ export interface MpgSessionEvent {
   session_id: string;
   project_key: string;
   project_dir: string;
+  /** Thread ID for correlating handoffs across sessions */
+  thread_id?: string;
   /** Only on session_end */
   duration_ms?: number;
+  /** Agent name, present on session_start */
+  agent_name?: string;
   /** Only on message_routed */
   persona?: string;
   /** Target agent for routed messages or handoffs */
@@ -272,6 +303,10 @@ export interface MpgSessionEvent {
   error_type?: string;
   /** Source agent for agent_handoff events */
   agent_source?: string;
+  /** Source agent for agent_handoff events (new MPG field) */
+  from_agent?: string;
+  /** Target agent for agent_handoff events (new MPG field) */
+  to_agent?: string;
   /** How the message was routed (e.g. "direct", "round-robin", "capability") */
   routing_method?: string;
 }

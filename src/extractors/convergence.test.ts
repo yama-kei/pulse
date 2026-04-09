@@ -623,3 +623,29 @@ describe("heredoc commit message extraction", () => {
     assert.equal(result.duplicateCommits, 0);
   });
 });
+
+describe("MPG agent_name fallback", () => {
+  function makeMpgEvent(overrides: Partial<MpgSessionEvent>): MpgSessionEvent {
+    return {
+      schema_version: 1,
+      timestamp: "2026-03-30T10:00:00Z",
+      event_type: "message_routed",
+      session_id: "test-session",
+      project_key: "test",
+      project_dir: "/test",
+      ...overrides,
+    };
+  }
+
+  it("falls back to agent_name from session_start when agent_target and persona are absent", () => {
+    const mpgData: CorrelatedMpgData = {
+      sessionId: "test-session",
+      events: [
+        { schema_version: 1, timestamp: "2026-03-30T09:59:00Z", event_type: "session_start", session_id: "test-session", project_key: "test", project_dir: "/test", agent_name: "architect" },
+        makeMpgEvent({ agent_target: undefined, persona: undefined }),
+      ],
+    };
+    const breakdown = computeAgentBreakdown(mpgData);
+    assert.equal(breakdown[0].agent, "architect");
+  });
+});

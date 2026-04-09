@@ -49,7 +49,8 @@ export function sessionIdFromPath(sessionPath: string): string {
 
 /**
  * Correlate MPG events with a Claude Code session.
- * Matches by session_id = filename (minus .jsonl extension).
+ * First matches by session_id, then expands to include all events
+ * sharing the same thread_id (handoffs may span multiple session IDs).
  * Returns null if no MPG events match this session.
  */
 export function correlateMpgEvents(
@@ -63,7 +64,25 @@ export function correlateMpgEvents(
   if (events.length === 0) return null;
 
   const sessionId = sessionIdFromPath(sessionPath);
-  const matched = events.filter(e => e.session_id === sessionId);
+
+  // Find events directly matching this session
+  const directMatches = events.filter(e => e.session_id === sessionId);
+
+  // Collect thread_ids from direct matches to pull in related events
+  const threadIds = new Set<string>();
+  for (const e of directMatches) {
+    if (e.thread_id) threadIds.add(e.thread_id);
+  }
+
+  // If we have thread_ids, include all events from those threads
+  let matched: MpgSessionEvent[];
+  if (threadIds.size > 0) {
+    matched = events.filter(
+      e => e.session_id === sessionId || (e.thread_id != null && threadIds.has(e.thread_id))
+    );
+  } else {
+    matched = directMatches;
+  }
 
   if (matched.length === 0) return null;
 

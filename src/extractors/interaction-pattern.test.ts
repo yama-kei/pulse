@@ -162,9 +162,9 @@ describe("interaction-pattern extractor", () => {
     const mpgData: CorrelatedMpgData = {
       sessionId: "test",
       events: [
-        { schema_version: 1, timestamp: "2026-03-30T10:00:00Z", event_type: "agent_handoff", session_id: "test", project_key: "t", project_dir: "/t", agent_source: "pm", agent_target: "engineer" },
-        { schema_version: 1, timestamp: "2026-03-30T10:01:00Z", event_type: "agent_handoff", session_id: "test", project_key: "t", project_dir: "/t", agent_source: "engineer", agent_target: "qa" },
-        { schema_version: 1, timestamp: "2026-03-30T10:02:00Z", event_type: "agent_handoff", session_id: "test", project_key: "t", project_dir: "/t", agent_source: "pm", agent_target: "engineer" },
+        { schema_version: 1, timestamp: "2026-03-30T10:00:00Z", event_type: "agent_handoff", session_id: "test", project_key: "t", project_dir: "/t", from_agent: "pm", to_agent: "engineer" },
+        { schema_version: 1, timestamp: "2026-03-30T10:01:00Z", event_type: "agent_handoff", session_id: "test", project_key: "t", project_dir: "/t", from_agent: "engineer", to_agent: "qa" },
+        { schema_version: 1, timestamp: "2026-03-30T10:02:00Z", event_type: "agent_handoff", session_id: "test", project_key: "t", project_dir: "/t", from_agent: "pm", to_agent: "engineer" },
       ],
     };
     const result = extractInteractionPattern(session, mpgData);
@@ -188,8 +188,8 @@ describe("handoff pattern classification", () => {
       session_id: "test",
       project_key: "t",
       project_dir: "/t",
-      agent_source: from,
-      agent_target: to,
+      from_agent: from,
+      to_agent: to,
     };
   }
 
@@ -220,6 +220,35 @@ describe("handoff pattern classification", () => {
     const result = computeHandoffPatterns(mpgData);
     assert.ok(result);
     assert.equal(result!.pattern, "iterative");
+  });
+
+  it("handles user-initiated handoffs (missing from_agent)", () => {
+    const mpgData: CorrelatedMpgData = {
+      sessionId: "test",
+      events: [
+        { schema_version: 1, timestamp: "2026-03-30T10:00:00Z", event_type: "agent_handoff", session_id: "test", project_key: "t", project_dir: "/t", to_agent: "engineer" },
+        makeHandoff("engineer", "qa"),
+      ],
+    };
+    const result = computeHandoffPatterns(mpgData);
+    assert.ok(result);
+    assert.equal(result!.totalHandoffs, 2);
+    const userToEng = result!.handoffPairs.find(p => p.from === "user" && p.to === "engineer");
+    assert.ok(userToEng);
+    assert.equal(userToEng!.count, 1);
+  });
+
+  it("falls back to legacy agent_source/agent_target fields", () => {
+    const mpgData: CorrelatedMpgData = {
+      sessionId: "test",
+      events: [
+        { schema_version: 1, timestamp: "2026-03-30T10:00:00Z", event_type: "agent_handoff", session_id: "test", project_key: "t", project_dir: "/t", agent_source: "pm", agent_target: "engineer" },
+      ],
+    };
+    const result = computeHandoffPatterns(mpgData);
+    assert.ok(result);
+    assert.equal(result!.handoffPairs[0].from, "pm");
+    assert.equal(result!.handoffPairs[0].to, "engineer");
   });
 
   it("returns null when no handoff events exist", () => {

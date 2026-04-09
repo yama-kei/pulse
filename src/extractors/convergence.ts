@@ -1,4 +1,4 @@
-import { ConvergenceSignal, PivotSignal, AgentConvergenceStats, CorrelatedMpgData, DecisionEvent } from "../types/pulse.js";
+import { ConvergenceSignal, PivotSignal, AgentConvergenceStats, CorrelatedMpgData, HeuristicDecisionEvent } from "../types/pulse.js";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -38,7 +38,7 @@ export function extractConvergence(
   let duplicateCommits = 0;
   let blindRetries = 0;
   let pivot: PivotSignal | null = null;
-  let decisionEvents: DecisionEvent[] = [];
+  let decisionEvents: HeuristicDecisionEvent[] = [];
 
   if (sessionPath) {
     const parsed = parseSessionMessages(sessionPath);
@@ -80,11 +80,19 @@ export function extractConvergence(
  * and computes a convergence penalty based on error rate.
  */
 export function computeAgentBreakdown(mpgData: CorrelatedMpgData): AgentConvergenceStats[] {
+  // Build session_id → agent_name lookup from session_start events
+  const sessionAgentMap = new Map<string, string>();
+  for (const event of mpgData.events) {
+    if (event.event_type === "session_start" && event.agent_name) {
+      sessionAgentMap.set(event.session_id, event.agent_name);
+    }
+  }
+
   const agentMap = new Map<string, { messages: number; errors: number }>();
 
   for (const event of mpgData.events) {
     if (event.event_type !== "message_routed") continue;
-    const agent = event.agent_target || event.persona || agentFromContext(event);
+    const agent = event.agent_target || event.persona || sessionAgentMap.get(event.session_id) || agentFromContext(event);
     const entry = agentMap.get(agent) || { messages: 0, errors: 0 };
     entry.messages++;
     if (event.is_error) entry.errors++;
@@ -306,7 +314,7 @@ function parseSessionMessages(sessionPath: string): {
   duplicateCommits: number;
   blindRetries: number;
   pivot: PivotSignal | null;
-  decisionEvents: DecisionEvent[];
+  decisionEvents: HeuristicDecisionEvent[];
 } {
   let exchanges = 0;
   let reworkInstances = 0;
@@ -319,7 +327,7 @@ function parseSessionMessages(sessionPath: string): {
 
   // Track message flow for blind-retry and pivot detection
   const messageClasses: Array<"rework" | "diagnostic" | "pivot_issue" | "pivot_rootcause" | "other"> = [];
-  const decisionEvents: DecisionEvent[] = [];
+  const decisionEvents: HeuristicDecisionEvent[] = [];
   let agentActedSinceLastUser = false;
 
   try {

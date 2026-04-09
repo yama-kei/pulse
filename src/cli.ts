@@ -9,7 +9,8 @@ import { resolve } from "node:path";
 
 const args = process.argv.slice(2);
 // Treat leading flags (--session, --json, etc.) as implicit "run" command
-const isImplicitRun = args[0]?.startsWith("--") && !["--help", "-h", "--version", "-v"].includes(args[0]);
+const knownCommands = new Set(["run", "activity", "history", "trend", "sessions", "compare", "anonymize", "help", "version", "--help", "-h", "--version", "-v"]);
+const isImplicitRun = args[0] != null && !knownCommands.has(args[0]);
 const command = isImplicitRun ? "run" : (args[0] || "run");
 
 function main(): void {
